@@ -27,9 +27,9 @@
     "CONSOLE_ORIGINS": "https://admin.planary.ch,http://localhost:3003",
     // The customer portal (planary-portal).
     "PORTAL_ORIGINS": "https://portal.planary.ch,http://localhost:3004",
-    // Claims the Console's Owner role on first sign-in, while nobody holds it. Set it to your own
-    // Planary account's e-mail before the first deploy; empty claims nothing.
-    "OWNER_EMAIL": "",
+    // Claims the Console's Owner role on first sign-in, while nobody holds it (same address as
+    // planary-stats' ADMIN_EMAILS). Empty claims nothing.
+    "OWNER_EMAIL": "mykytapantelei@gmail.com",
     "PORTAL_URL": "https://portal.planary.ch",
     "CONSOLE_URL": "https://admin.planary.ch",
     "MAIL_FROM": "Planary <info@planary.ch>",

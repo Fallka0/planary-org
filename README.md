@@ -30,7 +30,7 @@ Sign-in goes through the `AUTH` service binding to planary-auth. Locally there i
 
 1. **Resources.** `wrangler d1 create planary-org` and `wrangler r2 bucket create planary-org-files`, then `npm run db:migrate`.
 2. **Variables** in `wrangler.jsonc`:
-   - Set `OWNER_EMAIL` to your own Planary account's e-mail. That account claims the Console's Owner role on its first sign-in, once, while nobody holds it. It is empty on purpose; empty claims nothing.
+   - `OWNER_EMAIL` (set to the address planary-stats already uses as admin) claims the Console's Owner role on its first sign-in, once, while nobody holds it. Change it if another account should own the Console; empty claims nothing.
    - Check `CONSOLE_ORIGINS` and `PORTAL_ORIGINS` (allowed browser origins), `PORTAL_URL`, `CONSOLE_URL`, `MAIL_FROM` and `STAFF_INBOX`.
 3. **Secrets** (`wrangler secret put NAME`). Each one is optional: without it, its integration switches off and the related screens say so.
    - `INTERNAL_KEY`: a long random string, shared with the Tournament API, planary-auth and planary-stats.
