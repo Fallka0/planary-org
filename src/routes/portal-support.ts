@@ -39,6 +39,31 @@ function portalMessages(messages: Awaited<ReturnType<typeof messagesOf>>): Porta
     }));
 }
 
+interface Upload {
+  id: string;
+  key: string;
+  name: string;
+  size: number;
+  type: string;
+  bytes: Uint8Array;
+}
+
+/** Images from a form (`files` or `files[]`): PNG or JPG by their bytes, up to 10 MB each. */
+async function readUploads(form: FormData, orgId: string): Promise<Upload[]> {
+  const files = [...form.getAll('files[]'), ...form.getAll('files')].filter((f): f is File => typeof f !== 'string');
+  if (files.length > MAX_ATTACHMENTS) throw bad(`Up to ${MAX_ATTACHMENTS} images.`, 'too_many_files');
+  const uploads: Upload[] = [];
+  for (const f of files) {
+    if (f.size > MAX_ATTACHMENT_BYTES) throw new ApiError(413, 'Images may be up to 10 MB.', 'file_too_large');
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    const type = imageType(bytes);
+    if (!type) throw new ApiError(415, 'Images must be PNG or JPG.', 'invalid_file_type');
+    const id = randomId('att');
+    uploads.push({ id, key: `attachments/${orgId}/${id}`, name: safeFileName(f.name, type), size: bytes.length, type, bytes });
+  }
+  return uploads;
+}
+
 async function loadRequest(env: Env, orgId: string, rid: string) {
   const row = await env.DB.prepare(`${REQUEST_SELECT} WHERE r.org_id = ? AND (r.id = ? OR r.code = ?)`).bind(orgId, rid, rid.toUpperCase()).first<RequestRow>();
   if (!row) throw notFound('No request with that id.');
@@ -89,17 +114,7 @@ export function registerPortalSupport(app: Hono<AppEnv>) {
       if (!tournament) throw bad('No tournament with that id in this organisation.', 'invalid_tournamentId');
     }
 
-    const files = [...form.getAll('files[]'), ...form.getAll('files')].filter((f): f is File => typeof f !== 'string');
-    if (files.length > MAX_ATTACHMENTS) throw bad(`Up to ${MAX_ATTACHMENTS} images.`, 'too_many_files');
-    const uploads: { id: string; key: string; name: string; size: number; type: string; bytes: Uint8Array }[] = [];
-    for (const f of files) {
-      if (f.size > MAX_ATTACHMENT_BYTES) throw new ApiError(413, 'Images may be up to 10 MB.', 'file_too_large');
-      const bytes = new Uint8Array(await f.arrayBuffer());
-      const type = imageType(bytes);
-      if (!type) throw new ApiError(415, 'Images must be PNG or JPG.', 'invalid_file_type');
-      const id = randomId('att');
-      uploads.push({ id, key: `attachments/${org.id}/${id}`, name: safeFileName(f.name, type), size: bytes.length, type, bytes });
-    }
+    const uploads = await readUploads(form, org.id);
 
     const id = randomId('req');
     const messageId = randomId('msg');
@@ -162,28 +177,59 @@ export function registerPortalSupport(app: Hono<AppEnv>) {
   app.post('/orgs/:id/requests/:rid/messages', async (c) => {
     const { org, person } = await memberOf(c);
     const row = await loadRequest(c.env, org.id, c.req.param('rid'));
-    const body = await readJson(c);
-    const text = requireText(body.body, 'body', 10_000, { multiline: true });
+    // JSON { body }, or form data with body and images.
+    let raw: unknown;
+    let uploads: Upload[] = [];
+    if ((c.req.header('content-type') ?? '').startsWith('multipart/form-data')) {
+      const form = await c.req.formData().catch(() => {
+        throw bad('Send the reply as JSON or multipart form data.', 'invalid_form');
+      });
+      raw = form.get('body');
+      uploads = await readUploads(form, org.id);
+    } else {
+      raw = (await readJson(c)).body;
+    }
+    const text = requireText(raw, 'body', 10_000, { multiline: true });
     const now = Date.now();
     const DB = c.env.DB;
+    const messageId = randomId('msg');
+    for (const u of uploads) await c.env.FILES.put(u.key, u.bytes, { httpMetadata: { contentType: u.type } });
     // A customer's answer puts the request back in staff's queue.
-    await DB.batch([
-      DB.prepare("INSERT INTO request_messages (id, request_id, kind, author_id, author_name, body, created_at) VALUES (?, ?, 'customer', ?, ?, ?, ?)").bind(
-        randomId('msg'),
-        row.id,
-        person.id,
-        person.name,
-        text,
-        now,
-      ),
-      DB.prepare("UPDATE requests SET status = 'open', done_at = NULL, updated_at = ?1, last_customer_at = ?1 WHERE id = ?2").bind(now, row.id),
-      auditStmt(c.env, { area: 'portal', actor: portalActor(person), action: 'request.reply', sentence: 'Answered a support request', target: row.code, details: org.name }),
-    ]);
+    try {
+      await DB.batch([
+        DB.prepare("INSERT INTO request_messages (id, request_id, kind, author_id, author_name, body, created_at) VALUES (?, ?, 'customer', ?, ?, ?, ?)").bind(
+          messageId,
+          row.id,
+          person.id,
+          person.name,
+          text,
+          now,
+        ),
+        ...uploads.map((u) =>
+          DB.prepare('INSERT INTO attachments (id, request_id, message_id, org_id, r2_key, name, size, type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(
+            u.id,
+            row.id,
+            messageId,
+            org.id,
+            u.key,
+            u.name,
+            u.size,
+            u.type,
+            now,
+          ),
+        ),
+        DB.prepare("UPDATE requests SET status = 'open', done_at = NULL, updated_at = ?1, last_customer_at = ?1 WHERE id = ?2").bind(now, row.id),
+        auditStmt(c.env, { area: 'portal', actor: portalActor(person), action: 'request.reply', sentence: 'Answered a support request', target: row.code, details: org.name }),
+      ]);
+    } catch (error) {
+      if (uploads.length) await c.env.FILES.delete(uploads.map((u) => u.key));
+      throw error;
+    }
     await sendMail(c.env, {
       to: c.env.STAFF_INBOX,
       replyTo: person.email || undefined,
       subject: `${person.name} replied on ${row.code}: ${row.subject}`,
-      text: `${person.name} <${person.email}> from ${org.name} wrote:\n\n${text}\n\nOpen in the Console: ${c.env.CONSOLE_URL}/support/${row.id}`,
+      text: `${person.name} <${person.email}> from ${org.name} wrote:\n\n${text}${uploads.length ? `\n\nAttachments: ${uploads.length}` : ''}\n\nOpen in the Console: ${c.env.CONSOLE_URL}/support/${row.id}`,
     });
     return c.json({ ok: true });
   });

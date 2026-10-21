@@ -10,7 +10,7 @@ import { requirePerson } from '../lib/auth';
 import { imageType, MAX_LOGO_BYTES } from '../lib/files';
 import { sendMail } from '../lib/mail';
 import { contactOf, contactOut, getOrg, ORG_SELECT, orgBanners, planCutoff, renewsAt, tournamentBanners, validSlug, type OrgRow } from '../lib/orgs';
-import { THIS_YEAR_SQL, thisYear, TOURNAMENT_ORDER, TOURNAMENT_SELECT, organisersOf, tournamentOut, type TournamentRow } from '../lib/tournaments';
+import { THIS_YEAR_SQL, thisYear, TOURNAMENT_ORDER, TOURNAMENT_SELECT, tournamentDetailOut, tournamentOut, type TournamentRow } from '../lib/tournaments';
 import {
   ApiError,
   bad,
@@ -188,6 +188,11 @@ portalApp.post('/orgs/:id', async (c) => {
     );
     changed.push('contact');
   }
+  const dropLogo = body.removeLogo === true && !!org.logo_key;
+  if (dropLogo) {
+    stmts.push(DB.prepare('UPDATE organisations SET logo_key = NULL WHERE id = ?').bind(org.id));
+    changed.push('logo removed');
+  }
   if (stmts.length === 0) return c.json({ ok: true });
   stmts.push(auditStmt(c.env, { area: 'portal', actor: portalActor(person), action: 'org.settings', sentence: 'Changed the organisation settings', target: org.name, details: changed.join(', ') }));
   try {
@@ -196,6 +201,7 @@ portalApp.post('/orgs/:id', async (c) => {
     if (String(error).includes('UNIQUE')) throw conflict('That address is taken.', 'slug_taken');
     throw error;
   }
+  if (dropLogo && org.logo_key) await c.env.FILES.delete(org.logo_key);
   return c.json({ ok: true });
 });
 
@@ -244,8 +250,7 @@ portalApp.get('/orgs/:id/tournaments/:tid', async (c) => {
   const { org } = await memberOf(c);
   const t = await c.env.DB.prepare(`${TOURNAMENT_SELECT} WHERE t.id = ? AND t.organisation_id = ?`).bind(c.req.param('tid'), org.id).first<TournamentRow>();
   if (!t) throw notFound('No tournament with that id.');
-  const summary = tournamentOut(t);
-  return c.json({ ...summary, organisers: organisersOf(t), played: t.played, matches: t.matches, banners: await tournamentBanners(c.env, summary, Date.now()) });
+  return c.json(tournamentDetailOut(t, await tournamentBanners(c.env, tournamentOut(t), Date.now())));
 });
 
 // ── Members and invitations ──────────────────────────

@@ -71,7 +71,7 @@ export function lastEvent(r: RequestRow, last: { kind: 'customer' | 'staff'; at:
 
 export function portalRequest(r: RequestRow, last: { kind: 'customer' | 'staff'; at: number } | null, now: number): PortalRequest {
   const { unread: _unread, assignee: _assignee, ...rest } = requestSummary(r);
-  return { ...rest, lastEvent: lastEvent(r, last, now) };
+  return { ...rest, lastEvent: lastEvent(r, last, now), lastBy: last?.kind ?? 'customer' };
 }
 
 interface MessageRow {

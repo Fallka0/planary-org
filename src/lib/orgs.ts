@@ -160,9 +160,8 @@ export function overdueBanner(inv: InvoiceRow, now: number): PortalBanner {
   const number = inv.number || inv.id;
   return {
     kind: 'overdue',
-    text:
-      `Rechnung ${number} über ${chf(inv.amount)} ist seit ${days} ${days === 1 ? 'Tag' : 'Tagen'} überfällig. ` +
-      `Bitte bis ${longDate(deadline, now)} bezahlen, sonst wechselt euer Plan zu Gratis.`,
+    title: `Rechnung ${number} über ${chf(inv.amount)} ist seit ${days} ${days === 1 ? 'Tag' : 'Tagen'} überfällig.`,
+    text: `Bitte bis ${longDate(deadline, now)} bezahlen, sonst wechselt euer Plan zu Gratis. Laufende Turniere sind nicht betroffen.`,
     ref: inv.id,
     tournamentIds: [],
   };
@@ -191,9 +190,16 @@ export async function shownIncidentUpdates(env: Env): Promise<ShownUpdate[]> {
   return results;
 }
 
+/** "Live-Resultate kommen verzögert an. Eure Resultate …" → the first sentence and the rest. */
+export function firstSentence(message: string): [string, string] {
+  const m = message.trim().match(/^(.+?[.?:])\s+(\S[\s\S]*)$/);
+  return m ? [m[1], m[2]] : [message.trim(), ''];
+}
+
 export function incidentBanner(u: ShownUpdate, tournamentIds: string[], now: number): PortalBanner {
   const since = zurichDay(u.started_at) === zurichDay(now) ? timeOfDay(u.started_at) : `${shortDate(u.started_at)}, ${timeOfDay(u.started_at)}`;
-  return { kind: 'incident', text: `Störung bei Planary seit ${since}. ${u.message}`, ref: u.incident_id, tournamentIds };
+  const [lead, rest] = firstSentence(u.message);
+  return { kind: 'incident', title: `Störung bei Planary: ${lead}`, text: `Seit ${since}.${rest ? ` ${rest}` : ''}`, ref: u.incident_id, tournamentIds };
 }
 
 /** Banners for an organisation. Overdue banners only for owners (members don't see billing). */

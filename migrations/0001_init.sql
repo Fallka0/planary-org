@@ -312,6 +312,12 @@ CREATE TABLE tournaments (
   organisers TEXT NOT NULL DEFAULT '[]',
   played INTEGER NOT NULL DEFAULT 0,
   matches INTEGER NOT NULL DEFAULT 0,
+  -- For the portal's tournament page. created_at stays as first reported.
+  created_at INTEGER,
+  registration_opens_at INTEGER,
+  registration_closes_at INTEGER,
+  venue TEXT,
+  format TEXT,
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX tournaments_org ON tournaments (organisation_id);

@@ -98,6 +98,9 @@ describe('organisations', () => {
     const bad = new FormData();
     bad.append('file', new File([new TextEncoder().encode('<svg/>')], 'x.svg', { type: 'image/svg+xml' }));
     expect((await call('POST', '/portal/orgs/org_a/logo', { who: MATTEO, form: bad })).status).toBe(415);
+    expect((await post('/portal/orgs/org_a', { removeLogo: true }, { who: MATTEO })).status).toBe(200);
+    expect((await json(get('/portal/orgs/org_a', { who: MATTEO }))).logoUrl).toBeNull();
+    expect(await env.FILES.list({ prefix: 'logos/org_a/' }).then((l) => l.objects.length)).toBe(0);
 
     expect((await post('/portal/orgs/org_a/delete', { confirm: 'wrong' }, { who: MATTEO })).status).toBe(400);
     const del = await json(post('/portal/orgs/org_a/delete', { confirm: 'Gurten LAN' }, { who: MATTEO }));
@@ -252,7 +255,24 @@ describe('support requests', () => {
     expect(list.requests[0]).toMatchObject({ status: 'waiting', lastEvent: 'Wir brauchen noch eine Angabe von dir' });
     expect(list.requests[0].assignee).toBeUndefined();
     expect(list.requests[0].unread).toBeUndefined();
+    expect(list.requests[0].lastBy).toBe('staff');
     await post(`/portal/orgs/org_a/requests/${id}/messages`, { body: 'Halbfinal 2' }, { who: NOA });
+    list = await json(get('/portal/orgs/org_a/requests', { who: NOA }));
+    expect(list.requests[0].lastBy).toBe('customer');
+
+    // A reply can carry images, checked by their bytes like a new request.
+    const reply = await call('POST', `/portal/orgs/org_a/requests/${id}/messages`, { who: NOA, form: requestForm({ body: 'Hier das Foto' }, [{ name: 'beamer.png', bytes: PNG, type: 'image/png' }]) });
+    expect(reply.status, await reply.clone().text()).toBe(200);
+    const detail = await json(get(`/portal/orgs/org_a/requests/${id}`, { who: NOA }));
+    const last = detail.messages[detail.messages.length - 1];
+    expect(last).toMatchObject({ kind: 'customer', body: 'Hier das Foto' });
+    expect(last.attachments).toHaveLength(1);
+    expect(last.attachments[0]).toMatchObject({ name: 'beamer.png', type: 'image/png' });
+    const fake = await call('POST', `/portal/orgs/org_a/requests/${id}/messages`, {
+      who: NOA,
+      form: requestForm({ body: 'x' }, [{ name: 'x.png', bytes: new TextEncoder().encode('<svg/>'), type: 'image/png' }]),
+    });
+    expect(fake.status).toBe(415);
     const consoleList = await json(get('/console/support', { who: OWNER }));
     expect(consoleList.requests[0]).toMatchObject({ status: 'open', unread: true });
     await post(`/portal/orgs/org_a/requests/${id}/done`, {}, { who: NOA });
@@ -274,7 +294,8 @@ describe('banners', () => {
     const owner = await json(get('/portal/orgs/org_a', { who: MATTEO }));
     expect(owner.banners).toHaveLength(1);
     expect(owner.banners[0]).toMatchObject({ kind: 'overdue', ref: 'in_1' });
-    expect(owner.banners[0].text).toMatch(/^Rechnung 2026-0142 über CHF 228\.00 ist seit 12 Tagen überfällig\. Bitte bis \d+\. \S+( \d{4})? bezahlen, sonst wechselt euer Plan zu Gratis\.$/);
+    expect(owner.banners[0].title).toBe('Rechnung 2026-0142 über CHF 228.00 ist seit 12 Tagen überfällig.');
+    expect(owner.banners[0].text).toMatch(/^Bitte bis \d+\. \S+( \d{4})? bezahlen, sonst wechselt euer Plan zu Gratis\. Laufende Turniere sind nicht betroffen\.$/);
     expect(owner.counts.overdueInvoices).toBe(1);
     const member = await json(get('/portal/orgs/org_a', { who: NOA }));
     expect(member.banners).toEqual([]);
@@ -285,7 +306,11 @@ describe('banners', () => {
     const inc = await json(post('/console/incidents', { title: 'Live-API', severity: 'major', services: ['tournament'], message: 'x' }, { who: OWNER }));
     await post(`/console/incidents/${inc.id}/updates`, { status: 'identified', message: 'Live-Resultate kommen verzögert an.', showToOrganisers: true }, { who: OWNER });
     const a = await json(get('/portal/orgs/org_a', { who: NOA }));
-    expect(a.banners).toEqual([{ kind: 'incident', text: expect.stringMatching(/^Störung bei Planary seit \d\d:\d\d\. Live-Resultate kommen verzögert an\.$/), ref: inc.id, tournamentIds: ['t_live'] }]);
+    expect(a.banners).toEqual([{ kind: 'incident', title: 'Störung bei Planary: Live-Resultate kommen verzögert an.', text: expect.stringMatching(/^Seit \d\d:\d\d\.$/), ref: inc.id, tournamentIds: ['t_live'] }]);
+    await post(`/console/incidents/${inc.id}/updates`, { status: 'monitoring', message: 'Live-Resultate kommen verzögert an. Eure Resultate sind gespeichert.', showToOrganisers: true }, { who: OWNER });
+    const a2 = await json(get('/portal/orgs/org_a', { who: NOA }));
+    expect(a2.banners[0].title).toBe('Störung bei Planary: Live-Resultate kommen verzögert an.');
+    expect(a2.banners[0].text).toMatch(/^Seit \d\d:\d\d\. Eure Resultate sind gespeichert\.$/);
     const b = await json(get('/portal/orgs/org_b', { who: SARA }));
     expect(b.banners).toEqual([]);
     const page = await json(get('/portal/orgs/org_a/tournaments/t_live', { who: NOA }));
@@ -294,5 +319,55 @@ describe('banners', () => {
     expect(internal.banners[0].tournamentIds).toEqual(['t_live']);
     await post(`/console/incidents/${inc.id}/updates`, { status: 'resolved', message: 'Behoben.', showToOrganisers: false }, { who: OWNER });
     expect((await json(get('/portal/orgs/org_a', { who: NOA }))).banners).toEqual([]);
+  });
+});
+
+describe('tournament page', () => {
+  it('shows what the Tournament API reported: steps, venue, format and organisers', async () => {
+    const created = Date.parse('2026-09-02T18:00:00+02:00');
+    const event = {
+      kind: 'created',
+      id: 't_gurten',
+      slug: 'gurten-lan',
+      name: 'Gurten LAN',
+      game: 'Counter-Strike 2',
+      startsAt: Date.parse('2026-10-20T10:00:00+02:00'),
+      endsAt: Date.parse('2026-10-20T20:30:00+02:00'),
+      state: 'live',
+      phase: 'Halbfinals',
+      teams: 16,
+      maxTeams: 16,
+      waiting: 2,
+      organisationId: 'org_a',
+      organisationName: 'Verein Gurten LAN',
+      ownerId: MATTEO.id,
+      plan: 'verein',
+      viewers: 142,
+      updatedAt: Date.now() - 1000,
+      createdAt: created,
+      registrationOpensAt: Date.parse('2026-09-05T12:00:00+02:00'),
+      registrationClosesAt: Date.parse('2026-10-15T23:59:00+02:00'),
+      venue: 'Gurtenpark, Bern',
+      format: 'Gruppen + K.-o. · Best of 3',
+      organisers: [{ id: MATTEO.id, name: 'Matteo Keller', role: 'leitet' }],
+      played: 29,
+      matches: 31,
+    };
+    expect((await post('/internal/tournament-events', event, { internal: true })).status).toBe(200);
+    // A later update without createdAt keeps the first one.
+    expect((await post('/internal/tournament-events', { ...event, kind: 'updated', createdAt: undefined, played: 30, updatedAt: Date.now() }, { internal: true })).status).toBe(200);
+    const page = await json(get('/portal/orgs/org_a/tournaments/t_gurten', { who: NOA }));
+    expect(page).toMatchObject({
+      createdAt: created,
+      registration: { opensAt: event.registrationOpensAt, closesAt: event.registrationClosesAt },
+      venue: 'Gurtenpark, Bern',
+      format: 'Gruppen + K.-o. · Best of 3',
+      organisers: [{ id: MATTEO.id, name: 'Matteo Keller', role: 'leitet' }],
+      played: 30,
+      matches: 31,
+      banners: [],
+    });
+    expect((await post('/internal/tournament-events', { ...event, createdAt: 'gestern' }, { internal: true })).status).toBe(400);
+    expect((await get('/portal/orgs/org_b/tournaments/t_gurten', { who: SARA })).status).toBe(404);
   });
 });

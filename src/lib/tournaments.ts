@@ -1,6 +1,6 @@
 // The tournaments mirror: a summary per tournament, written by the Tournament API.
 
-import type { PlanId, TournamentState, TournamentSummary } from '../contract';
+import type { PlanId, PortalBanner, PortalTournamentDetail, TournamentState, TournamentSummary } from '../contract';
 import { parseJsonArray, yearStart } from './util';
 
 export interface TournamentRow {
@@ -24,6 +24,11 @@ export interface TournamentRow {
   organisers: string;
   played: number;
   matches: number;
+  created_at: number | null;
+  registration_opens_at: number | null;
+  registration_closes_at: number | null;
+  venue: string | null;
+  format: string | null;
   updated_at: number;
 }
 
@@ -55,10 +60,24 @@ export function organisersOf(r: TournamentRow): { id: string; name: string; role
     .map((o) => ({ id: String(o.id), name: String(o.name ?? ''), role: String(o.role ?? '') }));
 }
 
+export function tournamentDetailOut(r: TournamentRow, banners: PortalBanner[]): PortalTournamentDetail {
+  return {
+    ...tournamentOut(r),
+    createdAt: r.created_at ?? r.updated_at,
+    registration: { opensAt: r.registration_opens_at, closesAt: r.registration_closes_at },
+    venue: r.venue,
+    format: r.format,
+    organisers: organisersOf(r),
+    played: r.played,
+    matches: r.matches,
+    banners,
+  };
+}
+
 /** Every tournament query selects through this, so organisationName follows renames. */
 export const TOURNAMENT_SELECT = `SELECT t.id, t.slug, t.name, t.game, t.starts_at, t.ends_at, t.state, t.phase, t.teams, t.max_teams, t.waiting,
   t.organisation_id, t.owner_id, COALESCE(tog.name, t.organisation_name) AS organisation_name, t.plan, t.viewers, t.organisers,
-  t.played, t.matches, t.updated_at
+  t.played, t.matches, t.created_at, t.registration_opens_at, t.registration_closes_at, t.venue, t.format, t.updated_at
   FROM tournaments t LEFT JOIN organisations tog ON tog.id = t.organisation_id`;
 
 /** Live first, then sign-up open, drafts and finished; within each, by start. */

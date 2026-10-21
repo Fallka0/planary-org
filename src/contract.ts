@@ -326,7 +326,9 @@ export interface PortalOrgSummary { id: string; name: string; initials: string; 
 
 export interface PortalBanner {
   kind: 'incident' | 'overdue';
-  /** German, ready to show. */
+  /** German, ready to show, in bold: "Rechnung 2026-0142 über CHF 228.00 ist seit 12 Tagen überfällig." */
+  title: string;
+  /** German, the sentences after the title. */
   text: string;
   /** Incident id or invoice id. */
   ref: string;
@@ -360,19 +362,34 @@ export interface PortalRequestMessage extends Omit<RequestMessage, 'kind'> { kin
 export interface PortalRequest extends Omit<RequestSummary, 'unread' | 'assignee'> {
   /** German line, e.g. "Planary hat um 20:06 geantwortet" */
   lastEvent: string;
+  /** Who wrote last (internal notes don't count). */
+  lastBy: 'customer' | 'staff';
 }
 
 export interface PortalRequestDetail extends PortalRequest { messages: PortalRequestMessage[] }
+
+export interface PortalTournamentDetail extends TournamentSummary {
+  createdAt: number;
+  registration: { opensAt: number | null; closesAt: number | null };
+  /** e.g. "Gurtenpark, Bern" */
+  venue: string | null;
+  /** e.g. "Gruppen + K.-o. · Best of 3" */
+  format: string | null;
+  organisers: { id: string; name: string; role: string }[];
+  played: number;
+  matches: number;
+  banners: PortalBanner[];
+}
 
 export interface PortalApi {
   'GET /portal/me': { R: { me: Person; orgs: PortalOrgSummary[] } };
   'POST /portal/orgs': { B: { name: string; slug: string }; R: { id: string } };
   'GET /portal/orgs/:id': { R: PortalOrg };
-  'POST /portal/orgs/:id': { B: { name?: string; slug?: string; contact?: BillingContact }; R: { ok: true } };
+  'POST /portal/orgs/:id': { B: { name?: string; slug?: string; contact?: BillingContact; removeLogo?: true }; R: { ok: true } };
   'POST /portal/orgs/:id/logo': { B: FormData; R: { logoUrl: string } };
   'POST /portal/orgs/:id/delete': { B: { confirm: string }; R: { deleteAt: number } };
   'GET /portal/orgs/:id/tournaments': { R: { tournaments: TournamentSummary[] } };
-  'GET /portal/orgs/:id/tournaments/:tid': { R: TournamentSummary & { organisers: { id: string; name: string; role: string }[]; played: number; matches: number; banners: PortalBanner[] } };
+  'GET /portal/orgs/:id/tournaments/:tid': { R: PortalTournamentDetail };
   'GET /portal/orgs/:id/billing': { R: { plans: Plan[]; current: PlanId; invoices: Invoice[]; paymentMethod: PaymentMethod | null; contact: BillingContact; renewsAt: number | null } };
   'POST /portal/orgs/:id/checkout': { B: { plan: 'event' | 'verein'; tournamentId?: string; payBy?: 'card' | 'invoice' }; R: { url: string } };
   'POST /portal/orgs/:id/billing-portal': { R: { url: string } };
@@ -386,7 +403,8 @@ export interface PortalApi {
   'GET /portal/orgs/:id/requests': { R: { requests: PortalRequest[] } };
   'GET /portal/orgs/:id/requests/:rid': { R: PortalRequestDetail };
   'POST /portal/orgs/:id/requests': { B: FormData; R: { id: string } };
-  'POST /portal/orgs/:id/requests/:rid/messages': { B: { body: string }; R: { ok: true } };
+  /** JSON `{ body }`, or form data with `body` and up to 3 PNG/JPG `files` (10 MB each). */
+  'POST /portal/orgs/:id/requests/:rid/messages': { B: { body: string } | FormData; R: { ok: true } };
   'POST /portal/orgs/:id/requests/:rid/done': { R: { ok: true } };
 }
 
@@ -404,6 +422,11 @@ export interface TournamentEvent extends TournamentSummary {
   kind: 'created' | 'updated' | 'deleted';
   /** Optional, for the portal's tournament page: who runs it, and how many matches are played. */
   organisers?: { id: string; name: string; role: string }[];
+  createdAt?: number;
+  registrationOpensAt?: number | null;
+  registrationClosesAt?: number | null;
+  venue?: string | null;
+  format?: string | null;
   played?: number;
   matches?: number;
 }

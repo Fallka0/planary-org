@@ -80,6 +80,10 @@ internalApp.post('/tournament-events', async (c) => {
   const startsAt = time(b.startsAt);
   const endsAt = time(b.endsAt);
   if (startsAt === undefined || endsAt === undefined) throw bad('startsAt and endsAt are epoch ms or null.', 'invalid_time');
+  const createdAt = time(b.createdAt);
+  const opensAt = time(b.registrationOpensAt);
+  const closesAt = time(b.registrationClosesAt);
+  if (createdAt === undefined || opensAt === undefined || closesAt === undefined) throw bad('createdAt and the registration times are epoch ms or null.', 'invalid_time');
   const organisers = Array.isArray(b.organisers)
     ? b.organisers
         .slice(0, 50)
@@ -107,6 +111,11 @@ internalApp.post('/tournament-events', async (c) => {
     organisers: JSON.stringify(organisers),
     played: int(b.played, 0, 100_000, 0),
     matches: int(b.matches, 0, 100_000, 0),
+    created_at: createdAt,
+    registration_opens_at: opensAt,
+    registration_closes_at: closesAt,
+    venue: clean(b.venue, 120) || null,
+    format: clean(b.format, 120) || null,
     updated_at: time(b.updatedAt) ?? Date.now(),
   };
   const cols = Object.keys(row);
@@ -114,7 +123,7 @@ internalApp.post('/tournament-events', async (c) => {
     `INSERT INTO tournaments (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})
      ON CONFLICT (id) DO UPDATE SET ${cols
        .filter((k) => k !== 'id')
-       .map((k) => `${k} = excluded.${k}`)
+       .map((k) => (k === 'created_at' ? 'created_at = COALESCE(tournaments.created_at, excluded.created_at)' : `${k} = excluded.${k}`))
        .join(', ')}
      WHERE excluded.updated_at >= tournaments.updated_at`,
   )

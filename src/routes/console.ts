@@ -59,6 +59,8 @@ consoleApp.use('*', async (c, next) => {
       await DB.batch([
         DB.prepare('UPDATE staff SET id = ?, user_id = ?, name = ?, last_active = ? WHERE id = ?').bind(person.id, person.id, person.name, now, pending.id),
         DB.prepare('UPDATE audit_log SET actor_id = ? WHERE actor_id = ?').bind(person.id, pending.id),
+        DB.prepare('UPDATE requests SET assignee_id = ? WHERE assignee_id = ?').bind(person.id, pending.id),
+        DB.prepare('UPDATE customer_notes SET staff_id = ? WHERE staff_id = ?').bind(person.id, pending.id),
         auditStmt(c.env, { area: 'staff', actor, action: 'staff.join', sentence: 'Joined the Console', target: person.name, details: pending.role }),
       ]);
       row = { ...pending, id: person.id, user_id: person.id, name: person.name, last_active: now };

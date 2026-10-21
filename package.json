@@ -8,7 +8,6 @@
     "typecheck": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply planary-org --local",
     "db:migrate": "wrangler d1 migrations apply planary-org --remote",
-    "db:seed:local": "wrangler d1 execute planary-org --local --file scripts/seed.sql",
     "deploy": "wrangler deploy"
   },
   "dependencies": {
