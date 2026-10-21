@@ -304,7 +304,8 @@ export interface ConsoleApi {
   'POST /console/customers/:id/notes': { B: { body: string }; R: { ok: true } };
   'POST /console/customers/:id/reminder': { B: { invoiceId: string }; R: { ok: true } };
   'POST /console/customers/:id/plan': { B: { plan: PlanId; reason: string }; R: { ok: true } };
-  'GET /console/support': { Q: { status?: RequestStatus; who?: 'all' | 'mine' | 'unassigned' }; R: { requests: RequestSummary[]; counts: Record<RequestStatus, number> } };
+  'GET /console/support': { Q: { status?: RequestStatus; who?: 'all' | 'mine' | 'unassigned' }; R: { requests: RequestSummary[]; counts: Record<RequestStatus, number>; /** Staff who can be assigned (support edit). */ assignable: { id: string; name: string }[] } };
+  /** Also marks the request as seen by staff (clears `unread`). */
   'GET /console/support/:id': { R: RequestDetail };
   'POST /console/support/:id/messages': { B: { kind: 'staff' | 'internal'; body: string; setStatus?: RequestStatus }; R: { ok: true } };
   'POST /console/support/:id': { B: { status?: RequestStatus; assigneeId?: string | null }; R: { ok: true } };

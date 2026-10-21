@@ -384,15 +384,18 @@ consoleApp.get('/audit', need('audit'), async (c) => {
   const before = c.req.query('before');
   const where: string[] = [];
   const binds: unknown[] = [];
-  if (area) {
-    if (!(AREAS as readonly string[]).includes(area) && area !== 'portal' && area !== 'system') throw bad('Unknown area.', 'invalid_area');
-    where.push('area = ?');
-    binds.push(area);
+  // area: one area or a comma-separated list (e.g. customers,notes); empty means all.
+  const areas = [...new Set((area ?? '').split(',').map((a) => a.trim()).filter(Boolean))];
+  if (areas.length) {
+    for (const a of areas) if (!(AREAS as readonly string[]).includes(a) && a !== 'portal' && a !== 'system') throw bad(`Unknown area: ${a.slice(0, 40)}.`, 'invalid_area');
+    where.push(`area IN (${areas.map(() => '?').join(', ')})`);
+    binds.push(...areas);
   }
   if (staff) {
     where.push('actor_id = ?');
     binds.push(staff);
   }
+  // before: the id of the last entry of the previous page; returns entries older than it.
   if (before) {
     if (!/^\d{1,15}$/.test(before)) throw bad('before must be an entry id.', 'invalid_before');
     where.push('id < ?');
