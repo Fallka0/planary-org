@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import type { LimitsResponse, MemberRole, PlanId, ServiceId, TournamentState } from '../contract';
 import type { AppEnv, Env } from '../env';
 import { internalKeyOk } from '../lib/auth';
-import { getOrg, ORG_SELECT, planCutoff, tournamentBanners, type OrgRow } from '../lib/orgs';
+import { getOrg, ORG_SELECT, planCutoff, servicesOf, tournamentBanners, type OrgRow } from '../lib/orgs';
 import { bad, clean, errorBody, initials, int, MINUTE, notFound, oneOf, readJson, requireOneOf, requireText } from '../lib/util';
 import { PLAN_IDS, PLANS } from '../plans';
 import { SERVICE_IDS } from '../services';
@@ -71,7 +71,9 @@ internalApp.get('/people/:id/orgs', async (c) => {
   const { results } = await c.env.DB.prepare(`SELECT x.*, m.role AS member_role FROM (${ORG_SELECT}) x JOIN members m ON m.org_id = x.id WHERE m.user_id = ? AND x.delete_at IS NULL ORDER BY x.name`)
     .bind(planCutoff(Date.now()), user)
     .all<OrgRow & { member_role: MemberRole }>();
-  return c.json({ orgs: results.map((o) => ({ id: o.id, name: o.name, initials: initials(o.name), role: o.member_role, plan: o.plan })) });
+  return c.json({
+    orgs: results.map((o) => ({ id: o.id, name: o.name, initials: initials(o.name), role: o.member_role, plan: o.plan, services: servicesOf(o), wishlist: PLANS[o.plan].wishlist })),
+  });
 });
 
 const STATES: readonly TournamentState[] = ['draft', 'open', 'live', 'done'];

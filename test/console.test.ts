@@ -392,6 +392,16 @@ describe('overview, search and wishlist', () => {
     const on = await json(get('/console/wishlist', { who: VIEWER, env: { WISHLIST_API: 'https://wishlist.test' } }));
     expect(on).toMatchObject({ lists: 9812, items: 61204, shops: [['galaxus.ch', 22]] });
     expect(on.secret).toBeUndefined();
+
+    // Over the service binding, in the shape Wishlist answers.
+    const WISHLIST = {
+      fetch: async (req: Request) =>
+        new URL(req.url).pathname === '/api/internal/totals' && req.headers.get('x-internal-key') === 'test-internal-key'
+          ? Response.json({ lists: 10, items: 40, sharedLists: 3, reservationsThisMonth: 5, newListsPerWeek: [1, 2, 4], shopDomains: [{ domain: 'galaxus.ch', items: 3 }, { domain: 'digitec.ch', items: 1 }] })
+          : new Response('', { status: 404 }),
+    } as unknown as Fetcher;
+    const bound = await json(get('/console/wishlist', { who: VIEWER, env: { WISHLIST } }));
+    expect(bound).toEqual({ lists: 10, listsNewWeek: 4, items: 40, sharedLists: 3, reservationsMonth: 5, newPerWeek: [1, 2, 4], shops: [['galaxus.ch', 0.75], ['digitec.ch', 0.25]] });
   });
 });
 

@@ -3,13 +3,13 @@
 // alone see billing and change settings and members (403 for members).
 
 import { Hono, type Context } from 'hono';
-import type { BillingContact, MemberRole, PortalInvite, PortalMember, PortalOrg, PortalOrgSummary } from '../contract';
+import type { BillingContact, MemberRole, OrgService, OrgWishlist, PortalInvite, PortalMember, PortalOrg, PortalOrgSummary, PortalWishlists } from '../contract';
 import type { AppEnv, Env, PersonCtx } from '../env';
 import { auditStmt } from '../lib/audit';
 import { requirePerson } from '../lib/auth';
 import { imageType, MAX_LOGO_BYTES } from '../lib/files';
 import { sendMail } from '../lib/mail';
-import { contactOf, contactOut, getOrg, ORG_SELECT, orgBanners, planCutoff, renewsAt, tournamentBanners, validSlug, type OrgRow } from '../lib/orgs';
+import { contactOf, contactOut, getOrg, ORG_SELECT, ORG_SERVICES, orgBanners, planCutoff, renewsAt, servicesOf, tournamentBanners, validSlug, type OrgRow } from '../lib/orgs';
 import { THIS_YEAR_SQL, thisYear, TOURNAMENT_ORDER, TOURNAMENT_SELECT, tournamentDetailOut, tournamentOut, type TournamentRow } from '../lib/tournaments';
 import {
   ApiError,
@@ -54,7 +54,7 @@ portalApp.get('/me', async (c) => {
   const { results } = await c.env.DB.prepare(`SELECT x.*, m.role AS member_role FROM (${ORG_SELECT}) x JOIN members m ON m.org_id = x.id WHERE m.user_id = ? ORDER BY x.name`)
     .bind(planCutoff(Date.now()), person.id)
     .all<OrgRow & { member_role: MemberRole }>();
-  const orgs: PortalOrgSummary[] = results.map((o) => ({ id: o.id, name: o.name, initials: initials(o.name), role: o.member_role, plan: o.plan }));
+  const orgs: PortalOrgSummary[] = results.map((o) => ({ id: o.id, name: o.name, initials: initials(o.name), role: o.member_role, plan: o.plan, services: servicesOf(o) }));
   return c.json({ me: { id: person.id, name: person.name, email: person.email }, orgs });
 });
 
@@ -68,11 +68,23 @@ function slugOf(value: unknown) {
   return slug;
 }
 
+/** At least one known service, in display order. */
+function servicesIn(value: unknown): OrgService[] {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== 'string' || !ORG_SERVICES.includes(v as OrgService))) {
+    throw bad(`services must be a list of ${ORG_SERVICES.join(', ')}.`, 'invalid_services');
+  }
+  const list = ORG_SERVICES.filter((s) => value.includes(s));
+  if (!list.length) throw bad('Choose at least one service.', 'no_services');
+  return list;
+}
+
 portalApp.post('/orgs', async (c) => {
   const person = c.get('person');
   const body = await readJson(c);
   const name = orgName(body.name);
   const slug = slugOf(body.slug);
+  // Older portal builds send no services; they only knew Tournament.
+  const services = body.services === undefined ? (['tournament'] as OrgService[]) : servicesIn(body.services);
   const owned = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM members WHERE user_id = ? AND role = 'owner'").bind(person.id).first<{ n: number }>();
   if ((owned?.n ?? 0) >= 20) throw new ApiError(429, 'You already own 20 organisations.', 'too_many_orgs');
   if (await c.env.DB.prepare('SELECT 1 FROM organisations WHERE slug = ?').bind(slug).first()) throw conflict('That address is taken.', 'slug_taken');
@@ -81,7 +93,7 @@ portalApp.post('/orgs', async (c) => {
   const DB = c.env.DB;
   try {
     await DB.batch([
-      DB.prepare('INSERT INTO organisations (id, name, slug, created_by, created_at) VALUES (?, ?, ?, ?, ?)').bind(id, name, slug, person.id, now),
+      DB.prepare('INSERT INTO organisations (id, name, slug, services, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(id, name, slug, JSON.stringify(services), person.id, now),
       DB.prepare("INSERT INTO members (org_id, user_id, name, email, role, last_active, created_at) VALUES (?, ?, ?, ?, 'owner', ?, ?)").bind(
         id,
         person.id,
@@ -92,7 +104,7 @@ portalApp.post('/orgs', async (c) => {
       ),
       DB.prepare("INSERT INTO subscriptions (org_id, plan, state, updated_at) VALUES (?, 'gratis', 'none', ?)").bind(id, now),
       DB.prepare("INSERT INTO billing_contacts (org_id, email, phone, address, updated_at) VALUES (?, ?, '', '[]', ?)").bind(id, person.email, now),
-      auditStmt(c.env, { area: 'portal', actor: portalActor(person), action: 'org.create', sentence: 'Created an organisation', target: name, details: slug }),
+      auditStmt(c.env, { area: 'portal', actor: portalActor(person), action: 'org.create', sentence: 'Created an organisation', target: name, details: `${slug}, ${services.join(' + ')}` }),
     ]);
   } catch (error) {
     if (String(error).includes('UNIQUE')) throw conflict('That address is taken.', 'slug_taken');
@@ -131,6 +143,7 @@ portalApp.get('/orgs/:id', async (c) => {
     logoUrl: logoUrl(c, org),
     role,
     plan: PLANS[org.plan],
+    services: servicesOf(org),
     renewsAt: isOwner ? renewsAt(org) : null,
     createdAt: org.created_at,
     // Billing contact and invoices are owners' business.
@@ -187,6 +200,16 @@ portalApp.post('/orgs/:id', async (c) => {
       ).bind(org.id, contact.email, contact.phone, JSON.stringify(contact.address), now),
     );
     changed.push('contact');
+  }
+  if (body.services !== undefined) {
+    const services = servicesIn(body.services);
+    const before = servicesOf(org);
+    if (services.join() !== before.join()) {
+      stmts.push(DB.prepare('UPDATE organisations SET services = ? WHERE id = ?').bind(JSON.stringify(services), org.id));
+      const on = services.filter((s) => !before.includes(s));
+      const off = before.filter((s) => !services.includes(s));
+      changed.push(...on.map((s) => `${s} on`), ...off.map((s) => `${s} off`));
+    }
   }
   const dropLogo = body.removeLogo === true && !!org.logo_key;
   if (dropLogo) {
@@ -251,6 +274,53 @@ portalApp.get('/orgs/:id/tournaments/:tid', async (c) => {
   const t = await c.env.DB.prepare(`${TOURNAMENT_SELECT} WHERE t.id = ? AND t.organisation_id = ?`).bind(c.req.param('tid'), org.id).first<TournamentRow>();
   if (!t) throw notFound('No tournament with that id.');
   return c.json(tournamentDetailOut(t, await tournamentBanners(c.env, tournamentOut(t), Date.now())));
+});
+
+// ── Wishlists ────────────────────────────────────────
+
+const WISHLIST_URL = 'https://wishlist.planary.ch';
+
+/** The organisation's wishlists from Wishlist, totals per list only. */
+portalApp.get('/orgs/:id/wishlists', async (c) => {
+  const { org } = await memberOf(c);
+  if (!servicesOf(org).includes('wishlist')) throw notFound('Wishlist is off for this organisation.');
+  const base = (c.env.WISHLIST_URL ?? WISHLIST_URL).replace(/\/+$/, '');
+  const body: PortalWishlists = {
+    connected: false,
+    lists: [],
+    maxLists: PLANS[org.plan].wishlist.maxLists,
+    newUrl: `${base}/app?org=${encodeURIComponent(org.id)}`,
+  };
+  if (!c.env.WISHLIST || !c.env.INTERNAL_KEY) return c.json(body);
+  try {
+    const res = await c.env.WISHLIST.fetch(
+      new Request(`https://wishlist.internal/api/internal/orgs/${encodeURIComponent(org.id)}/lists`, { headers: { 'x-internal-key': c.env.INTERNAL_KEY } }),
+    );
+    if (!res.ok) return c.json(body);
+    const d = (await res.json()) as { lists?: unknown };
+    if (!Array.isArray(d.lists)) return c.json(body);
+    body.connected = true;
+    body.lists = d.lists.flatMap((raw): OrgWishlist[] => {
+      const l = raw as Record<string, unknown>;
+      if (typeof l.id !== 'number' || typeof l.title !== 'string') return [];
+      const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.trunc(v) : 0);
+      return [
+        {
+          id: l.id,
+          title: l.title.slice(0, 60),
+          items: n(l.items),
+          value: n(l.value),
+          shared: l.shared === true,
+          createdBy: typeof l.createdBy === 'string' ? l.createdBy.slice(0, 80) : '',
+          updatedAt: n(l.updatedAt),
+          url: `${base}/app/lists/${l.id}`,
+        },
+      ];
+    });
+  } catch (error) {
+    console.log(`wishlist lists for ${org.id} failed: ${error}`);
+  }
+  return c.json(body);
 });
 
 // ── Members and invitations ──────────────────────────

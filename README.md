@@ -42,6 +42,9 @@ Sign-in goes through the `AUTH` service binding to planary-auth. Locally there i
    - Turn on TWINT and card payments. Event passes take card or TWINT. Verein takes a card subscription or an invoice by e-mail; TWINT can't pay subscriptions.
    - Enable the customer portal (payment method, cancel).
 5. **DNS.** The `org.planary.ch` custom domain is created by the first `npm run deploy`.
-6. **Service bindings.** planary-auth must have `/api/internal/stats` (account totals for the Console). planary-stats must have `/api/internal/visitors`. Both use `INTERNAL_KEY`.
+6. **Service bindings.** planary-auth must have `/api/internal/stats` (account totals for the Console). planary-stats must have `/api/internal/visitors`. planary-wishlist must have `/api/internal/totals` and `/api/internal/orgs/:id/lists` (an organisation's wishlists for the portal). All use `INTERNAL_KEY`, and planary-wishlist needs the secret too.
+7. **Migrations** after an update: `npm run db:migrate` (0002 adds the services an organisation uses; existing organisations keep Tournament).
+
+Organisations choose their services (Tournament, Wishlist) in the portal. One plan covers all of them; `src/plans.ts` holds the limits per service.
 
 Prices in `src/plans.ts` are the brief's placeholders, `placeholder: true`. Every surface shows them as placeholders until Planary sets them.

@@ -2,7 +2,7 @@
 // sets them; every surface shows a "Platzhalter" chip while `placeholder` is true.
 // Provider price ids come from env vars (STRIPE_PRICE_EVENT, STRIPE_PRICE_VEREIN), not from here.
 
-import type { Plan, PlanId, PlanLimits } from './contract';
+import type { Plan, PlanId, PlanLimits, WishlistLimits } from './contract';
 
 export const PLAN_IDS: readonly PlanId[] = ['gratis', 'event', 'verein'];
 
@@ -42,10 +42,15 @@ const VEREIN: PlanLimits = {
   invoice: true,
 };
 
+// Wishlist: the organisation's own wishlists. Event is a pass for one tournament, so for Wishlist
+// it counts like Gratis.
+const WISHLIST_GRATIS: WishlistLimits = { maxLists: 2 };
+const WISHLIST_VEREIN: WishlistLimits = { maxLists: null };
+
 export const PLANS: Record<PlanId, Plan> = {
-  gratis: { id: 'gratis', name: 'Gratis', price: 0, period: 'forever', placeholder: true, limits: GRATIS },
-  event: { id: 'event', name: 'Event', price: 4900, period: 'tournament', placeholder: true, limits: EVENT },
-  verein: { id: 'verein', name: 'Verein', price: 1900, period: 'month_yearly', placeholder: true, limits: VEREIN },
+  gratis: { id: 'gratis', name: 'Gratis', price: 0, period: 'forever', placeholder: true, limits: GRATIS, wishlist: WISHLIST_GRATIS },
+  event: { id: 'event', name: 'Event', price: 4900, period: 'tournament', placeholder: true, limits: EVENT, wishlist: WISHLIST_GRATIS },
+  verein: { id: 'verein', name: 'Verein', price: 1900, period: 'month_yearly', placeholder: true, limits: VEREIN, wishlist: WISHLIST_VEREIN },
 };
 
 export const planList = (): Plan[] => PLAN_IDS.map((id) => PLANS[id]);

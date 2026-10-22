@@ -12,7 +12,9 @@
     // Verifies sign-in tokens and reads account totals, worker to worker.
     { "binding": "AUTH", "service": "planary-auth" },
     // Unique visitors per app for the Console overview.
-    { "binding": "STATS", "service": "planary-stats" }
+    { "binding": "STATS", "service": "planary-stats" },
+    // The Console's Wishlist totals and each organisation's wishlists (/api/internal/*).
+    { "binding": "WISHLIST", "service": "planary-wishlist" }
     // Not built yet. Add once planary-tournament-api exists (nothing here depends on it):
     // { "binding": "TOURNAMENT", "service": "planary-tournament-api" }
   ],
@@ -34,7 +36,7 @@
     "CONSOLE_URL": "https://admin.planary.ch",
     "MAIL_FROM": "Planary <info@planary.ch>",
     "STAFF_INBOX": "info@planary.ch",
-    // Base URL of the Wishlist API. Empty until it has /internal/totals; the Console then shows "not connected".
+    // Local runs only: Wishlist's /api base when there's no WISHLIST binding. Empty in production.
     "WISHLIST_API": ""
   },
   // Secrets (wrangler secret put): INTERNAL_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,

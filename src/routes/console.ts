@@ -348,33 +348,51 @@ consoleApp.get('/organisers', need('tournament'), async (c) => {
 // ── Wishlist (totals only, passed through) ───────────
 
 consoleApp.get('/wishlist', need('wishlist'), async (c) => {
-  const base = (c.env.WISHLIST_API ?? '').trim().replace(/\/+$/, '');
   const notConnected = () => c.json(errorBody(c, "The Wishlist API isn't connected yet.", 'not_connected'), 503);
-  if (!base || !/^https?:\/\//.test(base) || !c.env.INTERNAL_KEY) return notConnected();
+  if (!c.env.INTERNAL_KEY) return notConnected();
+  const base = (c.env.WISHLIST_API ?? '').trim().replace(/\/+$/, '');
+  const headers = { 'x-internal-key': c.env.INTERNAL_KEY };
   try {
-    const res = await fetch(`${base}/internal/totals`, { headers: { 'x-internal-key': c.env.INTERNAL_KEY }, signal: AbortSignal.timeout(10_000) });
-    if (!res.ok) return notConnected();
-    const d = (await res.json()) as Partial<WishlistTotals>;
-    const totals: WishlistTotals = {
-      lists: num(d.lists),
-      listsNewWeek: num(d.listsNewWeek),
-      items: num(d.items),
-      sharedLists: num(d.sharedLists),
-      reservationsMonth: num(d.reservationsMonth),
-      newPerWeek: Array.isArray(d.newPerWeek) ? d.newPerWeek.slice(-12).map(num) : [],
-      shops: Array.isArray(d.shops)
-        ? d.shops
-            .filter((s): s is [string, number] => Array.isArray(s) && typeof s[0] === 'string' && typeof s[1] === 'number')
-            .slice(0, 20)
-            .map(([domain, share]) => [domain.slice(0, 100), share] as [string, number])
-        : [],
-    };
-    return c.json(totals);
+    // The service binding when there is one, else WISHLIST_API (the Worker's /api base, for local runs).
+    const res = c.env.WISHLIST
+      ? await c.env.WISHLIST.fetch(new Request('https://wishlist.internal/api/internal/totals', { headers }))
+      : /^https?:\/\//.test(base)
+        ? await fetch(`${base}/internal/totals`, { headers, signal: AbortSignal.timeout(10_000) })
+        : null;
+    if (!res?.ok) return notConnected();
+    return c.json(wishlistTotals(await res.json()));
   } catch (error) {
     console.log(`wishlist totals failed: ${error}`);
     return notConnected();
   }
 });
+
+/** Wishlist's /api/internal/totals in the Console's shape. Shops come as item counts and become shares. */
+export function wishlistTotals(raw: unknown): WishlistTotals {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  const weekly = Array.isArray(d.newListsPerWeek) ? d.newListsPerWeek : Array.isArray(d.newPerWeek) ? d.newPerWeek : [];
+  const newPerWeek = weekly.slice(-12).map(num);
+  let shops: [string, number][] = [];
+  if (Array.isArray(d.shopDomains)) {
+    const rows = d.shopDomains.filter((s): s is { domain: string; items: number } => !!s && typeof s.domain === 'string' && typeof s.items === 'number');
+    const total = rows.reduce((a, s) => a + s.items, 0);
+    shops = rows.slice(0, 20).map((s) => [s.domain.slice(0, 100), total ? s.items / total : 0]);
+  } else if (Array.isArray(d.shops)) {
+    shops = d.shops
+      .filter((s): s is [string, number] => Array.isArray(s) && typeof s[0] === 'string' && typeof s[1] === 'number')
+      .slice(0, 20)
+      .map(([domain, share]) => [domain.slice(0, 100), share]);
+  }
+  return {
+    lists: num(d.lists),
+    listsNewWeek: d.listsNewWeek !== undefined ? num(d.listsNewWeek) : (newPerWeek.at(-1) ?? 0),
+    items: num(d.items),
+    sharedLists: num(d.sharedLists),
+    reservationsMonth: num(d.reservationsMonth ?? d.reservationsThisMonth),
+    newPerWeek,
+    shops,
+  };
+}
 
 // ── Audit log ────────────────────────────────────────
 
