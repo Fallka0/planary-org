@@ -29,6 +29,8 @@ export type Area =
   | 'audit'
   | 'staff';
 export type ServiceId = 'auth' | 'tournament' | 'casino' | 'wishlist' | 'web';
+/** The Planary services an organisation can switch on and manage in the portal. */
+export type OrgService = 'tournament' | 'wishlist';
 export type ServiceState = 'ok' | 'degraded' | 'down' | 'unknown';
 export type RequestStatus = 'open' | 'waiting' | 'done';
 export type RequestTopic = 'tournament' | 'billing' | 'plan' | 'account' | 'other';
@@ -54,6 +56,12 @@ export interface PlanLimits {
   invoice: boolean;
 }
 
+/** What a plan allows in Wishlist, for the organisation's own wishlists. */
+export interface WishlistLimits {
+  /** Wishlists the organisation may own. null = unlimited */
+  maxLists: number | null;
+}
+
 export interface Plan {
   id: PlanId;
   name: string;
@@ -62,7 +70,9 @@ export interface Plan {
   period: 'forever' | 'tournament' | 'month_yearly';
   /** True until Planary sets real prices: every surface shows a "Platzhalter" chip. */
   placeholder: boolean;
+  /** Tournament's limits (kept under this name for the Tournament API). */
   limits: PlanLimits;
+  wishlist: WishlistLimits;
 }
 
 export interface Invoice {
@@ -230,6 +240,7 @@ export interface CustomerRow {
   plan: PlanId;
   members: number;
   tournamentsThisYear: number;
+  services: OrgService[];
   /** Rappen per year */
   revenueYear: number;
   billing: 'paid' | 'overdue' | 'free' | 'card_expires';
@@ -322,7 +333,7 @@ export interface ConsoleApi {
 
 // ── portal ───────────────────────────────────────────
 
-export interface PortalOrgSummary { id: string; name: string; initials: string; role: MemberRole; plan: PlanId }
+export interface PortalOrgSummary { id: string; name: string; initials: string; role: MemberRole; plan: PlanId; services: OrgService[] }
 
 export interface PortalBanner {
   kind: 'incident' | 'overdue';
@@ -343,11 +354,13 @@ export interface PortalOrg {
   logoUrl: string | null;
   role: MemberRole;
   plan: Plan;
+  services: OrgService[];
   /** Verein: next renewal. */
   renewsAt: number | null;
   createdAt: number;
   contact: BillingContact;
   usage: { tournamentsThisYear: number; largestTournament: number; organisers: number };
+  /** Steps for the services the organisation uses; `tournament` is false while Tournament is off. */
   onboarding: { logo: boolean; team: boolean; tournament: boolean };
   banners: PortalBanner[];
   counts: { openRequests: number; overdueInvoices: number };
@@ -381,15 +394,42 @@ export interface PortalTournamentDetail extends TournamentSummary {
   banners: PortalBanner[];
 }
 
+/** One of the organisation's wishlists. No reservations, by design: the owners never learn what's reserved. */
+export interface OrgWishlist {
+  id: number;
+  title: string;
+  items: number;
+  /** Rappen, sum of the items' prices in CHF. */
+  value: number;
+  shared: boolean;
+  createdBy: string;
+  updatedAt: number;
+  /** Opens the list in Wishlist. */
+  url: string;
+}
+
+export interface PortalWishlists {
+  /** False while Wishlist can't be reached; `lists` is then empty. */
+  connected: boolean;
+  lists: OrgWishlist[];
+  /** From the plan. null = unlimited */
+  maxLists: number | null;
+  /** Starts a new wishlist for the organisation in Wishlist. */
+  newUrl: string;
+}
+
 export interface PortalApi {
   'GET /portal/me': { R: { me: Person; orgs: PortalOrgSummary[] } };
-  'POST /portal/orgs': { B: { name: string; slug: string }; R: { id: string } };
+  'POST /portal/orgs': { B: { name: string; slug: string; services: OrgService[] }; R: { id: string } };
   'GET /portal/orgs/:id': { R: PortalOrg };
-  'POST /portal/orgs/:id': { B: { name?: string; slug?: string; contact?: BillingContact; removeLogo?: true }; R: { ok: true } };
+  /** `services`: at least one. Turning one off hides it in the portal; its data stays. */
+  'POST /portal/orgs/:id': { B: { name?: string; slug?: string; contact?: BillingContact; removeLogo?: true; services?: OrgService[] }; R: { ok: true } };
   'POST /portal/orgs/:id/logo': { B: FormData; R: { logoUrl: string } };
   'POST /portal/orgs/:id/delete': { B: { confirm: string }; R: { deleteAt: number } };
   'GET /portal/orgs/:id/tournaments': { R: { tournaments: TournamentSummary[] } };
   'GET /portal/orgs/:id/tournaments/:tid': { R: PortalTournamentDetail };
+  /** 404 while Wishlist is off for the organisation. */
+  'GET /portal/orgs/:id/wishlists': { R: PortalWishlists };
   'GET /portal/orgs/:id/billing': { R: { plans: Plan[]; current: PlanId; invoices: Invoice[]; paymentMethod: PaymentMethod | null; contact: BillingContact; renewsAt: number | null } };
   'POST /portal/orgs/:id/checkout': { B: { plan: 'event' | 'verein'; tournamentId?: string; payBy?: 'card' | 'invoice' }; R: { url: string } };
   'POST /portal/orgs/:id/billing-portal': { R: { url: string } };
@@ -434,6 +474,8 @@ export interface TournamentEvent extends TournamentSummary {
 export interface InternalApi {
   'GET /internal/limits': { Q: { org?: string; tournament?: string; user: string }; R: LimitsResponse };
   'GET /internal/orgs/:id/membership': { Q: { user: string }; R: { role: MemberRole | null } };
+  /** The account's organisations, for Tournament and Wishlist (each filters by `services`). */
+  'GET /internal/people/:id/orgs': { R: { orgs: (PortalOrgSummary & { wishlist: WishlistLimits })[] } };
   'POST /internal/tournament-events': { B: TournamentEvent; R: { ok: true } };
   'POST /internal/errors': { B: { service: ServiceId; message: string; route: string; count?: number }; R: { ok: true } };
   'GET /internal/banners': { Q: { tournament: string }; R: { banners: PortalBanner[] } };

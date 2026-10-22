@@ -33,14 +33,14 @@ describe('membership', () => {
   it('tells Tournament which organisations an account belongs to, with the key only', async () => {
     expect((await get(`/internal/people/${NOA.id}/orgs`)).status).toBe(404);
     const r = await json(get(`/internal/people/${NOA.id}/orgs`, { internal: true }));
-    expect(r.orgs).toEqual([{ id: 'org_a', name: 'Verein Gurten LAN', initials: 'GL', role: 'member', plan: expect.any(String) }]);
+    expect(r.orgs).toEqual([{ id: 'org_a', name: 'Verein Gurten LAN', initials: 'GL', role: 'member', plan: 'gratis', services: ['tournament'], wishlist: { maxLists: 2 } }]);
     expect((await json(get('/internal/people/u_nobody/orgs', { internal: true }))).orgs).toEqual([]);
   });
 
   it('lists my organisations', async () => {
     const me = await json(get('/portal/me', { who: NOA }));
     expect(me.me).toMatchObject({ id: NOA.id, email: NOA.email });
-    expect(me.orgs).toEqual([{ id: 'org_a', name: 'Verein Gurten LAN', initials: 'GL', role: 'member', plan: 'gratis' }]);
+    expect(me.orgs).toEqual([{ id: 'org_a', name: 'Verein Gurten LAN', initials: 'GL', role: 'member', plan: 'gratis', services: ['tournament'] }]);
   });
 
   it('answers 404 for every route of an organisation I am not in', async () => {
@@ -86,6 +86,45 @@ describe('organisations', () => {
     expect((await post('/portal/orgs', { name: 'Other', slug: 'No Spaces' }, { who: SARA })).status).toBe(400);
     expect((await post('/portal/orgs', { name: 'Other', slug: 'ab' }, { who: SARA })).status).toBe(400);
     expect((await auditRows()).find((a) => a.action === 'org.create')).toMatchObject({ area: 'portal', actor_id: NOA.id });
+    expect(org.services).toEqual(['tournament']);
+  });
+
+  it('keeps the services an organisation chose, at least one', async () => {
+    const { id } = await json(post('/portal/orgs', { name: 'Spielclub Thun', slug: 'spielclub-thun', services: ['wishlist'] }, { who: NOA }));
+    expect((await json(get(`/portal/orgs/${id}`, { who: NOA }))).services).toEqual(['wishlist']);
+    expect((await post('/portal/orgs', { name: 'Other', slug: 'other-club', services: [] }, { who: NOA })).status).toBe(400);
+    expect((await post('/portal/orgs', { name: 'Other', slug: 'other-club', services: ['casino'] }, { who: NOA })).status).toBe(400);
+
+    expect((await post('/portal/orgs/org_a', { services: ['wishlist', 'tournament'] }, { who: NOA })).status).toBe(403);
+    expect((await post('/portal/orgs/org_a', { services: [] }, { who: MATTEO })).status).toBe(400);
+    expect((await post('/portal/orgs/org_a', { services: ['wishlist', 'tournament'] }, { who: MATTEO })).status).toBe(200);
+    expect((await json(get('/portal/orgs/org_a', { who: NOA }))).services).toEqual(['tournament', 'wishlist']);
+    expect((await json(get('/portal/me', { who: NOA }))).orgs.find((o: any) => o.id === 'org_a').services).toEqual(['tournament', 'wishlist']);
+    expect((await auditRows()).find((a) => a.action === 'org.settings')).toMatchObject({ details: 'wishlist on' });
+  });
+
+  it("shows the organisation's wishlists from Wishlist, totals only", async () => {
+    // Off by default for organisations made for Tournament.
+    expect((await get('/portal/orgs/org_a/wishlists', { who: NOA })).status).toBe(404);
+    await post('/portal/orgs/org_a', { services: ['tournament', 'wishlist'] }, { who: MATTEO });
+    const seen: string[] = [];
+    const WISHLIST = {
+      fetch: async (req: Request) => {
+        seen.push(`${new URL(req.url).pathname} ${req.headers.get('x-internal-key')}`);
+        return Response.json({ lists: [{ id: 7, title: 'Vereinsfest', items: 4, value: 12900, shared: true, createdBy: 'Matteo Keller', updatedAt: 1, reservations: 3 }, { bad: true }] });
+      },
+    } as unknown as Fetcher;
+    const r = await json(get('/portal/orgs/org_a/wishlists', { who: NOA, env: { WISHLIST } }));
+    expect(seen).toEqual(['/api/internal/orgs/org_a/lists test-internal-key']);
+    expect(r).toEqual({
+      connected: true,
+      maxLists: 2,
+      newUrl: 'https://wishlist.planary.ch/app?org=org_a',
+      lists: [{ id: 7, title: 'Vereinsfest', items: 4, value: 12900, shared: true, createdBy: 'Matteo Keller', updatedAt: 1, url: 'https://wishlist.planary.ch/app/lists/7' }],
+    });
+    // Without Wishlist the page still answers.
+    expect(await json(get('/portal/orgs/org_a/wishlists', { who: NOA }))).toMatchObject({ connected: false, lists: [] });
+    expect((await get('/portal/orgs/org_a/wishlists', { who: SARA })).status).toBe(404);
   });
 
   it('changes settings and the logo, and schedules deletion', async () => {

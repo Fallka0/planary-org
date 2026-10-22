@@ -1,8 +1,11 @@
 // Organisations: effective plan, billing state, invoices, contacts, banners.
 
-import type { BillingContact, Invoice, InvoiceStatus, PaymentMethod, PlanId, PortalBanner, TournamentSummary } from '../contract';
+import type { BillingContact, Invoice, InvoiceStatus, OrgService, PaymentMethod, PlanId, PortalBanner, TournamentSummary } from '../contract';
 import type { Env } from '../env';
 import { chf, DAY, longDate, parseJsonArray, shortDate, timeOfDay, zurichDay } from './util';
+
+/** The services an organisation can switch on in the portal, in display order. */
+export const ORG_SERVICES: readonly OrgService[] = ['tournament', 'wishlist'];
 
 /** Services whose outages affect organisers' running tournaments (for banners). */
 export const ORGANISER_SERVICES = ['tournament'] as const;
@@ -30,6 +33,8 @@ export interface OrgRow {
   name: string;
   slug: string;
   logo_key: string | null;
+  /** JSON array of OrgService. Read it with servicesOf(). */
+  services: string;
   plan_override: PlanId | null;
   created_at: number;
   delete_at: number | null;
@@ -41,9 +46,21 @@ export interface OrgRow {
   sub_plan: PlanId | null;
 }
 
-export const ORG_SELECT = `SELECT o.id, o.name, o.slug, o.logo_key, o.plan_override, o.created_at, o.delete_at,
+export const ORG_SELECT = `SELECT o.id, o.name, o.slug, o.logo_key, o.services, o.plan_override, o.created_at, o.delete_at,
   ${PLAN_SQL} AS plan, s.state AS sub_state, s.customer_id, s.subscription_id, s.current_period_end, s.plan AS sub_plan
   FROM organisations o LEFT JOIN subscriptions s ON s.org_id = o.id`;
+
+/** The services an organisation uses, in a fixed order. Unknown or broken values read as Tournament. */
+export function servicesOf(org: Pick<OrgRow, 'services'>): OrgService[] {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(org.services);
+  } catch {
+    raw = null;
+  }
+  const list = Array.isArray(raw) ? ORG_SERVICES.filter((s) => raw.includes(s)) : [];
+  return list.length ? list : ['tournament'];
+}
 
 export async function getOrg(env: Env, id: string, now = Date.now()) {
   return env.DB.prepare(`${ORG_SELECT} WHERE o.id = ?`).bind(planCutoff(now), id).first<OrgRow>();

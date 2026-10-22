@@ -8,6 +8,10 @@ export interface Env {
   AUTH: Fetcher;
   /** planary-stats: /api/internal/visitors (unique visitors per app). Optional. */
   STATS?: Fetcher;
+  /** planary-wishlist: /api/internal/* (the Console's totals, an organisation's wishlists). Optional. */
+  WISHLIST?: Fetcher;
+  /** Public address of Wishlist, for links in the portal. Default https://wishlist.planary.ch */
+  WISHLIST_URL?: string;
   /** planary-tournament-api, not built yet. Nothing depends on it. */
   TOURNAMENT?: Fetcher;
 
