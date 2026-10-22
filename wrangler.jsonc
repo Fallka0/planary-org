@@ -1,0 +1,43 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // planary-org: organisations, billing, support, incidents and the Console's data (docs/adr/0001).
+  "name": "planary-org",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  // No database_id: the first deploy creates the database, later commands find it by name.
+  "d1_databases": [{ "binding": "DB", "database_name": "planary-org", "migrations_dir": "migrations" }],
+  // Support attachments and organisation logos.
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "planary-org-files" }],
+  "services": [
+    // Verifies sign-in tokens and reads account totals, worker to worker.
+    { "binding": "AUTH", "service": "planary-auth" },
+    // Unique visitors per app for the Console overview.
+    { "binding": "STATS", "service": "planary-stats" }
+    // Not built yet. Add once planary-tournament-api exists (nothing here depends on it):
+    // { "binding": "TOURNAMENT", "service": "planary-tournament-api" }
+  ],
+  "routes": [{ "pattern": "org.planary.ch", "custom_domain": true, "zone_name": "planary.ch" }],
+  "triggers": {
+    // Every minute: health checks (and the GitHub deploy cache, at most every 10 minutes).
+    // Daily: deletes old checks, error reports and organisations past their deletion date.
+    "crons": ["* * * * *", "23 3 * * *"]
+  },
+  "vars": {
+    // The Console (planary-admin).
+    "CONSOLE_ORIGINS": "https://admin.planary.ch,http://localhost:3003",
+    // The customer portal (planary-portal).
+    "PORTAL_ORIGINS": "https://portal.planary.ch,http://localhost:3004",
+    // Claims the Console's Owner role on first sign-in, while nobody holds it (same address as
+    // planary-stats' ADMIN_EMAILS). Empty claims nothing.
+    "OWNER_EMAIL": "mykytapantelei@gmail.com",
+    "PORTAL_URL": "https://portal.planary.ch",
+    "CONSOLE_URL": "https://admin.planary.ch",
+    "MAIL_FROM": "Planary <info@planary.ch>",
+    "STAFF_INBOX": "info@planary.ch",
+    // Base URL of the Wishlist API. Empty until it has /internal/totals; the Console then shows "not connected".
+    "WISHLIST_API": ""
+  },
+  // Secrets (wrangler secret put): INTERNAL_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+  // STRIPE_PRICE_EVENT, STRIPE_PRICE_VEREIN, RESEND_API_KEY, GITHUB_TOKEN. See README.md.
+  "observability": { "enabled": true }
+}
