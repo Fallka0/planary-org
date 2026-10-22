@@ -30,6 +30,13 @@ describe('membership', () => {
     expect((await get('/portal/me')).status).toBe(401);
   });
 
+  it('tells Tournament which organisations an account belongs to, with the key only', async () => {
+    expect((await get(`/internal/people/${NOA.id}/orgs`)).status).toBe(404);
+    const r = await json(get(`/internal/people/${NOA.id}/orgs`, { internal: true }));
+    expect(r.orgs).toEqual([{ id: 'org_a', name: 'Verein Gurten LAN', initials: 'GL', role: 'member', plan: expect.any(String) }]);
+    expect((await json(get('/internal/people/u_nobody/orgs', { internal: true }))).orgs).toEqual([]);
+  });
+
   it('lists my organisations', async () => {
     const me = await json(get('/portal/me', { who: NOA }));
     expect(me.me).toMatchObject({ id: NOA.id, email: NOA.email });
