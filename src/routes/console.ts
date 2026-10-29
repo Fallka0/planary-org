@@ -16,7 +16,7 @@ import type { AppEnv, Env } from '../env';
 import { actorOf, need } from './guard';
 import { auditStmt } from '../lib/audit';
 import { requirePerson } from '../lib/auth';
-import { ORG_SELECT, planCutoff, type OrgRow } from '../lib/orgs';
+import { ORG_SELECT, type OrgRow } from '../lib/orgs';
 import { REQUEST_SELECT, requestSummary, type RequestRow } from '../lib/requests';
 import { TOURNAMENT_ORDER, TOURNAMENT_SELECT, tournamentOut, type TournamentRow } from '../lib/tournaments';
 import { bad, clean, conflict, email, errorBody, initials, likeTerm, MINUTE, notFound, oneOf, randomId, readJson, requireOneOf } from '../lib/util';
@@ -169,7 +169,6 @@ consoleApp.get('/overview', need('overview'), async (c) => {
     authStats(c.env, days * 2),
     visitors(c.env, window),
     c.env.DB.prepare(`SELECT COUNT(*) AS n, SUM(CASE WHEN plan <> 'gratis' THEN 1 ELSE 0 END) AS paid FROM (${ORG_SELECT} WHERE o.delete_at IS NULL)`)
-      .bind(planCutoff(now))
       .first<{ n: number; paid: number | null }>(),
     c.env.DB.prepare("SELECT COUNT(*) AS open, SUM(CASE WHEN assignee_id IS NULL THEN 1 ELSE 0 END) AS unassigned FROM requests WHERE status = 'open'").first<{
       open: number;
@@ -295,7 +294,7 @@ consoleApp.get('/organisers', need('tournament'), async (c) => {
   const now = Date.now();
   const [tournaments, orgs, members, overdue] = await Promise.all([
     c.env.DB.prepare(`${TOURNAMENT_SELECT} ORDER BY ${TOURNAMENT_ORDER}`).all<TournamentRow>(),
-    c.env.DB.prepare(`${ORG_SELECT}`).bind(planCutoff(now)).all<OrgRow>(),
+    c.env.DB.prepare(`${ORG_SELECT}`).all<OrgRow>(),
     c.env.DB.prepare('SELECT org_id, COUNT(*) AS n FROM members GROUP BY org_id').all<{ org_id: string; n: number }>(),
     c.env.DB.prepare("SELECT DISTINCT org_id FROM invoices WHERE status = 'open' AND due_at IS NOT NULL AND due_at < ?").bind(now).all<{ org_id: string }>(),
   ]);

@@ -48,6 +48,8 @@ and email it last saw, for display.
 
 ### Plans and prices are configuration
 
+> Superseded for plans and prices by [ADR 0002](0002-plans-v2.md): Gratis, Plus and the Turnier-Pass.
+
 `src/plans.ts` holds the plans (Gratis, Event, Verein), their limits and display prices; the
 provider price IDs come from env vars (`STRIPE_PRICE_EVENT`, `STRIPE_PRICE_VEREIN`). The prices
 are the brief's placeholders (CHF 0 / 49 per tournament / 19 per month billed yearly) and every

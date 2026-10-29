@@ -2,7 +2,9 @@
 // the event id is inserted in the same batch as its effects, so a replay changes nothing.
 
 import { Hono } from 'hono';
-import type { InvoiceStatus } from '../contract';
+import type { InvoiceStatus, SubscriptionLine } from '../contract';
+import { failureText } from '../lib/billing';
+import { applySwitchStmts } from './portal-billing';
 import type { AppEnv, Env } from '../env';
 import { auditStmt } from '../lib/audit';
 import { stripe, stripeConfigured, verifyStripeSignature } from '../lib/stripe';
@@ -83,47 +85,79 @@ async function effectsOf(env: Env, event: StripeEvent): Promise<D1PreparedStatem
   const customer = idOf(obj.customer);
   const type = event.type;
 
+  const checkoutId = str(obj.metadata?.checkout) ?? str(obj.subscription_details?.metadata?.checkout) ?? str(obj.parent?.subscription_details?.metadata?.checkout);
+  const markCheckout = (state: 'paid' | 'failed', failure: string | null = null) =>
+    checkoutId ? [DB.prepare("UPDATE checkouts SET state = ?, failure = ?, updated_at = ? WHERE id = ? AND state <> 'paid'").bind(state, failure, now, checkoutId)] : [];
+
   if (type === 'checkout.session.completed') {
     const orgId = await orgFor(env, obj, customer);
     if (!orgId) return [];
     const out: D1PreparedStatement[] = customer ? [linkCustomer(env, orgId, customer, now)] : [];
     const tournament = str(obj.metadata?.tournament);
-    if (obj.mode === 'payment' && obj.metadata?.plan === 'event' && tournament && obj.payment_status === 'paid') {
+    const isPass = obj.metadata?.kind === 'pass' || obj.metadata?.plan === 'event';
+    if (obj.mode === 'payment' && isPass && tournament) {
+      if (obj.payment_status !== 'paid') return out;
+      const created = checkoutId ? await DB.prepare('SELECT created_by FROM checkouts WHERE id = ?').bind(checkoutId).first<{ created_by: string }>() : null;
       out.push(
-        DB.prepare('INSERT OR IGNORE INTO event_passes (id, org_id, tournament_id, checkout_session_id, amount, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(
+        DB.prepare('INSERT OR IGNORE INTO passes (id, org_id, tournament_id, checkout_session_id, amount, created_at, created_by, invoice_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(
           randomId('pass'),
           orgId,
           tournament,
           str(obj.id),
           typeof obj.amount_total === 'number' ? obj.amount_total : 0,
           now,
+          created?.created_by ?? null,
+          idOf(obj.invoice),
         ),
-        auditStmt(env, { area: 'system', actor: null, action: 'billing.event_pass', sentence: 'Recorded an event pass', targetSql: orgName(orgId), details: `tournament ${tournament}`, at: now }),
+        ...markCheckout('paid'),
+        auditStmt(env, { area: 'system', actor: null, action: 'billing.pass', sentence: 'Recorded a Turnier-Pass', targetSql: orgName(orgId), details: `tournament ${tournament}`, at: now }),
       );
     }
     const sub = idOf(obj.subscription);
     if (obj.mode === 'subscription' && sub) {
-      out.push(DB.prepare('UPDATE subscriptions SET subscription_id = ?, updated_at = ? WHERE org_id = ?').bind(sub, now, orgId));
+      out.push(
+        DB.prepare("UPDATE subscriptions SET subscription_id = ?, pay_by = 'card', collection_method = 'charge_automatically', updated_at = ? WHERE org_id = ?").bind(sub, now, orgId),
+        ...markCheckout('paid'),
+      );
     }
     return out;
+  }
+
+  if (type === 'checkout.session.expired') return markCheckout('failed', 'Die Zahlung wurde nicht abgeschlossen. Es wurde nichts belastet.');
+
+  if (type === 'payment_intent.payment_failed') {
+    return markCheckout('failed', failureText(obj.last_payment_error?.code, obj.last_payment_error?.decline_code));
   }
 
   if (type.startsWith('customer.subscription.')) {
     const orgId = await orgFor(env, obj, customer);
     if (!orgId) return [];
     const status = type === 'customer.subscription.deleted' ? 'canceled' : (str(obj.status) ?? 'incomplete');
-    const plan = ACTIVE.includes(status) ? 'verein' : 'gratis';
+    const plan = ACTIVE.includes(status) ? 'plus' : 'gratis';
     const periodEnd = ms(obj.current_period_end) ?? ms(obj.items?.data?.[0]?.current_period_end);
-    return [
+    const method = str(obj.collection_method);
+    const payBy = method === 'send_invoice' ? 'invoice' : method === 'charge_automatically' ? 'card' : null;
+    const out: D1PreparedStatement[] = [
       DB.prepare(
-        `INSERT INTO subscriptions (org_id, plan, state, provider, customer_id, subscription_id, collection_method, current_period_end, updated_at)
-         VALUES (?1, ?2, ?3, 'stripe', ?4, ?5, ?6, ?7, ?8)
+        `INSERT INTO subscriptions (org_id, plan, state, provider, customer_id, subscription_id, collection_method, pay_by, current_period_end, updated_at)
+         VALUES (?1, ?2, ?3, 'stripe', ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT (org_id) DO UPDATE SET plan = excluded.plan, state = excluded.state, provider = 'stripe',
            customer_id = COALESCE(excluded.customer_id, subscriptions.customer_id), subscription_id = excluded.subscription_id,
-           collection_method = excluded.collection_method, current_period_end = excluded.current_period_end, updated_at = excluded.updated_at`,
-      ).bind(orgId, plan, status, customer, str(obj.id), str(obj.collection_method), periodEnd, now),
+           collection_method = excluded.collection_method, pay_by = COALESCE(excluded.pay_by, subscriptions.pay_by),
+           current_period_end = excluded.current_period_end, updated_at = excluded.updated_at`,
+      ).bind(orgId, plan, status, customer, str(obj.id), method, payBy, periodEnd, now),
       auditStmt(env, { area: 'system', actor: null, action: 'billing.subscription', sentence: 'Subscription changed at Stripe', targetSql: orgName(orgId), details: `${status}, plan ${plan}`, at: now }),
     ];
+    if (type === 'customer.subscription.deleted') {
+      // The switch to Gratis takes effect: members who weren't kept leave the organisation.
+      const row = await DB.prepare('SELECT org_id AS id, cancel_keep FROM subscriptions WHERE org_id = ?').bind(orgId).first<{ id: string; cancel_keep: string | null }>();
+      if (row) out.push(...applySwitchStmts(env, row, now));
+    } else if (obj.cancel_at_period_end === false) {
+      out.push(DB.prepare('UPDATE subscriptions SET cancel_at = NULL, cancel_keep = NULL WHERE org_id = ? AND cancel_at IS NOT NULL').bind(orgId));
+    } else if (obj.cancel_at_period_end === true && periodEnd) {
+      out.push(DB.prepare('UPDATE subscriptions SET cancel_at = COALESCE(cancel_at, ?) WHERE org_id = ?').bind(ms(obj.cancel_at) ?? periodEnd, orgId));
+    }
+    return out;
   }
 
   if (type.startsWith('invoice.')) {
@@ -136,13 +170,27 @@ async function effectsOf(env: Env, event: StripeEvent): Promise<D1PreparedStatem
     const status: InvoiceStatus = raw && ['draft', 'open', 'paid', 'void', 'uncollectible'].includes(raw) ? (raw as InvoiceStatus) : 'open';
     const description = str(obj.lines?.data?.[0]?.description) ?? str(obj.description) ?? '';
     const amount = typeof obj.total === 'number' ? obj.total : typeof obj.amount_due === 'number' ? obj.amount_due : 0;
+    const lines = invoiceLines(obj);
+    const paidWith = status === 'paid' ? (str(obj.collection_method) === 'send_invoice' ? 'invoice' : 'card') : null;
+    const tournament = str(obj.metadata?.tournament);
+    const extra: D1PreparedStatement[] = [];
+    if (tournament) {
+      extra.push(
+        DB.prepare('UPDATE passes SET invoice_id = ?, receipt_url = COALESCE(?, receipt_url) WHERE tournament_id = ?').bind(invoiceId, str(obj.invoice_pdf), tournament),
+        DB.prepare("UPDATE checkouts SET receipt_url = COALESCE(?, receipt_url), updated_at = ? WHERE tournament_id = ? AND state = 'paid'").bind(str(obj.invoice_pdf), now, tournament),
+      );
+    }
+    if (checkoutId && status === 'paid') extra.push(DB.prepare('UPDATE checkouts SET receipt_url = COALESCE(?, receipt_url), updated_at = ? WHERE id = ?').bind(str(obj.invoice_pdf), now, checkoutId));
+    if (type === 'invoice.payment_failed') extra.push(...markCheckout('failed', failureText(obj.last_finalization_error?.code)));
     return [
+      ...extra,
       DB.prepare(
-        `INSERT INTO invoices (id, org_id, number, created_at, due_at, amount, currency, status, description, pdf_url, pay_url, paid_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        `INSERT INTO invoices (id, org_id, number, created_at, due_at, amount, currency, status, description, pdf_url, pay_url, paid_at, updated_at, lines, paid_with)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT (id) DO UPDATE SET number = excluded.number, due_at = excluded.due_at, amount = excluded.amount, currency = excluded.currency,
            status = excluded.status, description = excluded.description, pdf_url = COALESCE(excluded.pdf_url, invoices.pdf_url),
-           pay_url = COALESCE(excluded.pay_url, invoices.pay_url), paid_at = COALESCE(excluded.paid_at, invoices.paid_at), updated_at = excluded.updated_at`,
+           pay_url = COALESCE(excluded.pay_url, invoices.pay_url), paid_at = COALESCE(excluded.paid_at, invoices.paid_at), updated_at = excluded.updated_at,
+           lines = CASE WHEN excluded.lines = '[]' THEN invoices.lines ELSE excluded.lines END, paid_with = COALESCE(excluded.paid_with, invoices.paid_with)`,
       ).bind(
         invoiceId,
         orgId,
@@ -157,6 +205,8 @@ async function effectsOf(env: Env, event: StripeEvent): Promise<D1PreparedStatem
         str(obj.hosted_invoice_url),
         status === 'paid' ? (ms(obj.status_transitions?.paid_at) ?? now) : null,
         now,
+        JSON.stringify(lines),
+        paidWith,
       ),
       ...(customer ? [linkCustomer(env, orgId, customer, now)] : []),
     ];
@@ -180,6 +230,23 @@ async function effectsOf(env: Env, event: StripeEvent): Promise<D1PreparedStatem
   }
 
   return [];
+}
+
+/** Stripe invoice lines as SubscriptionLines: passes are one-off, the subscription item is the base plan. */
+function invoiceLines(obj: Obj): SubscriptionLine[] {
+  const data: Obj[] = Array.isArray(obj.lines?.data) ? obj.lines.data : [];
+  return data.slice(0, 20).map((l) => {
+    const tournament = str(l.metadata?.tournament) ?? str(obj.metadata?.tournament);
+    const recurring = Boolean(l.price?.recurring) || l.type === 'subscription' || l.parent?.type === 'subscription_item_details';
+    const kind: SubscriptionLine['kind'] = tournament ? 'once' : recurring ? (data.indexOf(l) === 0 ? 'base' : 'addon') : 'once';
+    return {
+      kind,
+      name: (str(l.description) ?? '').slice(0, 200),
+      period: kind === 'once' ? 'once' : 'year',
+      amount: typeof l.amount === 'number' ? l.amount : 0,
+      tournamentId: tournament,
+    };
+  });
 }
 
 function cardStmt(env: Env, orgId: string, providerId: string | null, card: Obj, now: number) {

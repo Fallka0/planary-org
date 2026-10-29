@@ -31,8 +31,10 @@ export interface Env {
   INTERNAL_KEY?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
-  STRIPE_PRICE_EVENT?: string;
-  STRIPE_PRICE_VEREIN?: string;
+  /** Stripe price of Plus (CHF 149, yearly). */
+  STRIPE_PRICE_PLUS?: string;
+  /** Stripe price of the Turnier-Pass (CHF 29, one-off). */
+  STRIPE_PRICE_PASS?: string;
   RESEND_API_KEY?: string;
   GITHUB_TOKEN?: string;
 }

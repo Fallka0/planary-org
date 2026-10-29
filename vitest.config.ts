@@ -13,7 +13,7 @@ export default defineConfig(async () => {
         main: 'src/index.ts',
         miniflare: {
           compatibilityDate: '2025-09-01',
-          d1Databases: ['DB'],
+          d1Databases: ['DB', 'MIGRATION_DB'],
           r2Buckets: ['FILES'],
           bindings: {
             TEST_MIGRATIONS: migrations,

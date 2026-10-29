@@ -33,7 +33,7 @@ describe('membership', () => {
   it('tells Tournament which organisations an account belongs to, with the key only', async () => {
     expect((await get(`/internal/people/${NOA.id}/orgs`)).status).toBe(404);
     const r = await json(get(`/internal/people/${NOA.id}/orgs`, { internal: true }));
-    expect(r.orgs).toEqual([{ id: 'org_a', name: 'Verein Gurten LAN', initials: 'GL', role: 'member', plan: 'gratis', services: ['tournament'], wishlist: { maxLists: 2 } }]);
+    expect(r.orgs).toEqual([{ id: 'org_a', name: 'Verein Gurten LAN', initials: 'GL', role: 'member', plan: 'gratis', services: ['tournament'], wishlist: { maxLists: 3 } }]);
     expect((await json(get('/internal/people/u_nobody/orgs', { internal: true }))).orgs).toEqual([]);
   });
 
@@ -70,7 +70,7 @@ describe('membership', () => {
       [MATTEO.id, false],
       [NOA.id, true],
     ]);
-    expect(team.seats).toBe(1);
+    expect(team.seats).toBe(2);
   });
 });
 
@@ -81,7 +81,7 @@ describe('organisations', () => {
     const { id } = await json(res);
     const org = await json(get(`/portal/orgs/${id}`, { who: NOA }));
     expect(org).toMatchObject({ name: 'Spielclub Thun', initials: 'ST', role: 'owner', slug: 'spielclub-thun', onboarding: { logo: false, team: false, tournament: false } });
-    expect(org.plan).toMatchObject({ id: 'gratis', placeholder: true, limits: { maxTeams: 16 } });
+    expect(org.plan).toMatchObject({ id: 'gratis', price: 0, limits: { maxTeams: 16, maxOrganisers: 2 } });
     expect((await post('/portal/orgs', { name: 'Other', slug: 'spielclub-thun' }, { who: SARA })).status).toBe(409);
     expect((await post('/portal/orgs', { name: 'Other', slug: 'No Spaces' }, { who: SARA })).status).toBe(400);
     expect((await post('/portal/orgs', { name: 'Other', slug: 'ab' }, { who: SARA })).status).toBe(400);
@@ -118,7 +118,7 @@ describe('organisations', () => {
     expect(seen).toEqual(['/api/internal/orgs/org_a/lists test-internal-key']);
     expect(r).toEqual({
       connected: true,
-      maxLists: 2,
+      maxLists: 3,
       newUrl: 'https://wishlist.planary.ch/app?org=org_a',
       lists: [{ id: 7, title: 'Vereinsfest', items: 4, value: 12900, shared: true, createdBy: 'Matteo Keller', updatedAt: 1, url: 'https://wishlist.planary.ch/app/lists/7' }],
     });
@@ -159,9 +159,9 @@ describe('invitations', () => {
     const mail = fakeFetch([['https://api.resend.com/', () => Response.json({ id: 'm' })]]);
     vi.spyOn(globalThis, 'fetch').mockImplementation(mail.fn);
     const e = { RESEND_API_KEY: 're_test' };
-    // Gratis has one organiser seat (Matteo + Noa already exceed it): invitations are refused.
+    // Gratis has two organiser seats (Matteo and Noa fill them): invitations are refused.
     expect((await json(post('/portal/orgs/org_a/invites', { email: 'luca@example.test', role: 'member' }, { who: MATTEO, env: e }))).code).toBe('seats_full');
-    await env.DB.prepare("UPDATE subscriptions SET plan = 'verein', state = 'active' WHERE org_id = 'org_a'").run();
+    await env.DB.prepare("UPDATE subscriptions SET plan = 'plus', state = 'active' WHERE org_id = 'org_a'").run();
     expect((await post('/portal/orgs/org_a/invites', { email: 'Luca@Example.test', role: 'member' }, { who: MATTEO, env: e })).status).toBe(200);
     const sent = JSON.parse(mail.calls[0].body);
     const link: string = sent.text.match(/https:\/\/portal\.planary\.test\/einladung\/(\S+)/)[0];
@@ -173,7 +173,7 @@ describe('invitations', () => {
 
     const team = await json(get('/portal/orgs/org_a/members', { who: MATTEO }));
     expect(team.invites).toMatchObject([{ email: 'luca@example.test', role: 'member' }]);
-    expect(team.seats).toBe(5);
+    expect(team.seats).toBe(10);
 
     const wrong = await post(`/portal/invites/${tok}/accept`, {}, { who: SARA });
     expect(wrong.status).toBe(403);
@@ -185,7 +185,7 @@ describe('invitations', () => {
   });
 
   it('expires after 14 days and can be resent or withdrawn', async () => {
-    await env.DB.prepare("UPDATE subscriptions SET plan = 'verein', state = 'active' WHERE org_id = 'org_a'").run();
+    await env.DB.prepare("UPDATE subscriptions SET plan = 'plus', state = 'active' WHERE org_id = 'org_a'").run();
     const mail = fakeFetch([['https://api.resend.com/', () => Response.json({ id: 'm' })]]);
     vi.spyOn(globalThis, 'fetch').mockImplementation(mail.fn);
     const e = { RESEND_API_KEY: 're_test' };
@@ -340,8 +340,8 @@ describe('banners', () => {
     const owner = await json(get('/portal/orgs/org_a', { who: MATTEO }));
     expect(owner.banners).toHaveLength(1);
     expect(owner.banners[0]).toMatchObject({ kind: 'overdue', ref: 'in_1' });
-    expect(owner.banners[0].title).toBe('Rechnung 2026-0142 über CHF 228.00 ist seit 12 Tagen überfällig.');
-    expect(owner.banners[0].text).toMatch(/^Bitte bis \d+\. \S+( \d{4})? bezahlen, sonst wechselt euer Plan zu Gratis\. Laufende Turniere sind nicht betroffen\.$/);
+    expect(owner.banners[0].title).toBe('Rechnung 2026-0142 über CHF 228.00 ist seit 12 Tagen offen.');
+    expect(owner.banners[0].text).toMatch(/^Plus läuft bis \d+\. \S+( \d{4})? normal weiter\. Bitte bis dann bezahlen\.$/);
     expect(owner.counts.overdueInvoices).toBe(1);
     const member = await json(get('/portal/orgs/org_a', { who: NOA }));
     expect(member.banners).toEqual([]);

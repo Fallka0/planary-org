@@ -1,6 +1,6 @@
 // Organisations: effective plan, billing state, invoices, contacts, banners.
 
-import type { BillingContact, Invoice, InvoiceStatus, OrgService, PaymentMethod, PlanId, PortalBanner, TournamentSummary } from '../contract';
+import type { BillingContact, Invoice, InvoiceStatus, OrgService, PaymentMethod, PlanId, PortalBanner, SubscriptionLine, TournamentSummary } from '../contract';
 import type { Env } from '../env';
 import { chf, DAY, longDate, parseJsonArray, shortDate, timeOfDay, zurichDay } from './util';
 
@@ -10,23 +10,22 @@ export const ORG_SERVICES: readonly OrgService[] = ['tournament', 'wishlist'];
 /** Services whose outages affect organisers' running tournaments (for banners). */
 export const ORGANISER_SERVICES = ['tournament'] as const;
 
-/** How long an overdue invoice may stay open before the plan falls back to Gratis (banner text). */
-export const GRACE_DAYS = 30;
+/**
+ * How long Plus keeps running normally after an invoice's due date. After it, new tournaments
+ * get Gratis limits until the invoice is paid; nothing is deleted, running ones keep going.
+ */
+export const GRACE_DAYS = 26;
 
-/** An event pass counts towards the organisation's displayed plan for this long. */
-const EVENT_PLAN_WINDOW = 365 * DAY;
+/** Subscription states in which Plus is on. */
+export const ACTIVE_STATES = ['active', 'past_due', 'trialing'];
 
 /**
  * SQL for an organisation's effective plan. Needs `o` (organisations) and `s` (LEFT JOIN
- * subscriptions) in scope and one bound parameter: the event-pass cutoff (now - 365 days).
- * Staff override > active Verein subscription > recent event pass > Gratis.
+ * subscriptions) in scope. Staff override > active Plus subscription > Gratis. Passes are on
+ * tournaments, not on the organisation, so they don't change it.
  */
 export const PLAN_SQL = `COALESCE(o.plan_override,
-  CASE WHEN s.plan = 'verein' AND s.state IN ('active', 'past_due', 'trialing') THEN 'verein'
-       WHEN EXISTS (SELECT 1 FROM event_passes e WHERE e.org_id = o.id AND e.created_at > ?) THEN 'event'
-       ELSE 'gratis' END)`;
-
-export const planCutoff = (now: number) => now - EVENT_PLAN_WINDOW;
+  CASE WHEN s.plan = 'plus' AND s.state IN ('active', 'past_due', 'trialing') THEN 'plus' ELSE 'gratis' END)`;
 
 export interface OrgRow {
   id: string;
@@ -44,10 +43,15 @@ export interface OrgRow {
   subscription_id: string | null;
   current_period_end: number | null;
   sub_plan: PlanId | null;
+  collection_method: string | null;
+  pay_by: 'card' | 'invoice' | null;
+  cancel_at: number | null;
+  cancel_keep: string | null;
 }
 
 export const ORG_SELECT = `SELECT o.id, o.name, o.slug, o.logo_key, o.services, o.plan_override, o.created_at, o.delete_at,
-  ${PLAN_SQL} AS plan, s.state AS sub_state, s.customer_id, s.subscription_id, s.current_period_end, s.plan AS sub_plan
+  ${PLAN_SQL} AS plan, s.state AS sub_state, s.customer_id, s.subscription_id, s.current_period_end, s.plan AS sub_plan,
+  s.collection_method, s.pay_by, s.cancel_at, s.cancel_keep
   FROM organisations o LEFT JOIN subscriptions s ON s.org_id = o.id`;
 
 /** The services an organisation uses, in a fixed order. Unknown or broken values read as Tournament. */
@@ -62,12 +66,12 @@ export function servicesOf(org: Pick<OrgRow, 'services'>): OrgService[] {
   return list.length ? list : ['tournament'];
 }
 
-export async function getOrg(env: Env, id: string, now = Date.now()) {
-  return env.DB.prepare(`${ORG_SELECT} WHERE o.id = ?`).bind(planCutoff(now), id).first<OrgRow>();
+export async function getOrg(env: Env, id: string, _now = Date.now()) {
+  return env.DB.prepare(`${ORG_SELECT} WHERE o.id = ?`).bind(id).first<OrgRow>();
 }
 
 export function renewsAt(org: Pick<OrgRow, 'plan' | 'sub_state' | 'current_period_end'>) {
-  return org.plan === 'verein' && org.sub_state && ['active', 'past_due', 'trialing'].includes(org.sub_state) ? org.current_period_end : null;
+  return org.plan === 'plus' && org.sub_state && ACTIVE_STATES.includes(org.sub_state) ? org.current_period_end : null;
 }
 
 // ── Invoices ─────────────────────────────────────────
@@ -86,6 +90,9 @@ export interface InvoiceRow {
   pay_url: string | null;
   paid_at: number | null;
   reminders: number;
+  /** JSON SubscriptionLine[] */
+  lines: string;
+  paid_with: 'card' | 'invoice' | null;
 }
 
 /** Whole days past due while open (at least 1 once the due date has passed), else 0. */
@@ -104,6 +111,8 @@ export function invoiceOut(r: InvoiceRow, now: number): Invoice {
     currency: 'CHF',
     status: r.status,
     description: r.description,
+    lines: parseJsonArray<SubscriptionLine>(r.lines ?? '[]'),
+    paidWith: r.paid_with ?? null,
     overdueDays: overdueDays(r, now),
     pdfUrl: r.pdf_url,
     payUrl: r.pay_url,
@@ -136,11 +145,30 @@ export function cardExpiresSoon(pm: Pick<PaymentMethodRow, 'kind' | 'exp_month' 
   return end - now <= 30 * DAY;
 }
 
-export type BillingState = 'paid' | 'overdue' | 'free' | 'card_expires';
+/** The Console's billing column (CustomerRow.billing). */
+export type CustomerBilling = 'paid' | 'overdue' | 'free' | 'card_expires';
+
+/** The last day a card works: the first day after its expiry month. */
+export const cardEnd = (pm: Pick<PaymentMethodRow, 'exp_month' | 'exp_year'>) => Date.UTC(pm.exp_year, pm.exp_month, 1);
+
+/** True when the card stops working before the next renewal. */
+export function cardExpiresBefore(pm: Pick<PaymentMethodRow, 'kind' | 'exp_month' | 'exp_year'> | null, renewal: number | null) {
+  if (!pm || pm.kind !== 'card' || !pm.exp_year || !pm.exp_month || renewal == null) return false;
+  return cardEnd(pm) <= renewal;
+}
+
+/** The overdue invoice furthest past its due date, if any. */
+export function oldestOverdue<T extends Pick<InvoiceRow, 'status' | 'due_at'>>(invoices: T[], now: number): T | null {
+  const open = invoices.filter((i) => overdueDays(i, now) > 0).sort((a, b) => (a.due_at ?? 0) - (b.due_at ?? 0));
+  return open[0] ?? null;
+}
+
+/** Plus runs normally until this time after the due date of the oldest overdue invoice. */
+export const graceUntil = (due: number) => due + GRACE_DAYS * DAY;
 
 export function billingState(plan: PlanId, invoices: Pick<InvoiceRow, 'status' | 'due_at'>[], pm: PaymentMethodRow | null, now: number) {
   const overdue = Math.max(0, ...invoices.map((i) => overdueDays(i, now)));
-  let billing: BillingState;
+  let billing: CustomerBilling;
   if (overdue > 0) billing = 'overdue';
   else if (cardExpiresSoon(pm, now)) billing = 'card_expires';
   else if (plan === 'gratis' && invoices.length === 0) billing = 'free';
@@ -173,12 +201,12 @@ export async function billingRecipients(env: Env, orgId: string) {
 
 export function overdueBanner(inv: InvoiceRow, now: number): PortalBanner {
   const days = overdueDays(inv, now);
-  const deadline = (inv.due_at ?? now) + GRACE_DAYS * DAY;
+  const deadline = graceUntil(inv.due_at ?? now);
   const number = inv.number || inv.id;
   return {
     kind: 'overdue',
-    title: `Rechnung ${number} über ${chf(inv.amount)} ist seit ${days} ${days === 1 ? 'Tag' : 'Tagen'} überfällig.`,
-    text: `Bitte bis ${longDate(deadline, now)} bezahlen, sonst wechselt euer Plan zu Gratis. Laufende Turniere sind nicht betroffen.`,
+    title: `Rechnung ${number} über ${chf(inv.amount)} ist seit ${days} ${days === 1 ? 'Tag' : 'Tagen'} offen.`,
+    text: `Plus läuft bis ${longDate(deadline, now)} normal weiter. Bitte bis dann bezahlen.`,
     ref: inv.id,
     tournamentIds: [],
   };

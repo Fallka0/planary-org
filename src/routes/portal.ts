@@ -9,7 +9,8 @@ import { auditStmt } from '../lib/audit';
 import { requirePerson } from '../lib/auth';
 import { imageType, MAX_LOGO_BYTES } from '../lib/files';
 import { sendMail } from '../lib/mail';
-import { contactOf, contactOut, getOrg, ORG_SELECT, ORG_SERVICES, orgBanners, planCutoff, renewsAt, servicesOf, tournamentBanners, validSlug, type OrgRow } from '../lib/orgs';
+import { stateOf } from '../lib/billing';
+import { contactOf, contactOut, getOrg, type InvoiceRow, type PaymentMethodRow, ORG_SELECT, ORG_SERVICES, orgBanners, renewsAt, servicesOf, tournamentBanners, validSlug, type OrgRow } from '../lib/orgs';
 import { THIS_YEAR_SQL, thisYear, TOURNAMENT_ORDER, TOURNAMENT_SELECT, tournamentDetailOut, tournamentOut, type TournamentRow } from '../lib/tournaments';
 import {
   ApiError,
@@ -52,7 +53,7 @@ portalApp.use('*', async (c, next) => {
 portalApp.get('/me', async (c) => {
   const person = c.get('person');
   const { results } = await c.env.DB.prepare(`SELECT x.*, m.role AS member_role FROM (${ORG_SELECT}) x JOIN members m ON m.org_id = x.id WHERE m.user_id = ? ORDER BY x.name`)
-    .bind(planCutoff(Date.now()), person.id)
+    .bind(person.id)
     .all<OrgRow & { member_role: MemberRole }>();
   const orgs: PortalOrgSummary[] = results.map((o) => ({ id: o.id, name: o.name, initials: initials(o.name), role: o.member_role, plan: o.plan, services: servicesOf(o) }));
   return c.json({ me: { id: person.id, name: person.name, email: person.email }, orgs });
@@ -123,7 +124,7 @@ portalApp.get('/orgs/:id', async (c) => {
   const now = Date.now();
   const isOwner = role === 'owner';
   const DB = c.env.DB;
-  const [contact, usage, members, pendingInvites, anyTournament, banners, openRequests, overdue] = await Promise.all([
+  const [contact, usage, members, pendingInvites, anyTournament, banners, openRequests, overdue, invoices, pm, activePasses] = await Promise.all([
     contactOf(c.env, org.id),
     DB.prepare(`SELECT COUNT(*) AS n, COALESCE(MAX(t.max_teams), 0) AS largest FROM tournaments t WHERE t.organisation_id = ? AND ${THIS_YEAR_SQL}`)
       .bind(org.id, thisYear(now))
@@ -134,6 +135,11 @@ portalApp.get('/orgs/:id', async (c) => {
     orgBanners(c.env, org.id, isOwner, now),
     DB.prepare("SELECT COUNT(*) AS n FROM requests WHERE org_id = ? AND status <> 'done'").bind(org.id).first<{ n: number }>(),
     DB.prepare("SELECT COUNT(*) AS n FROM invoices WHERE org_id = ? AND status = 'open' AND due_at IS NOT NULL AND due_at < ?").bind(org.id, now).first<{ n: number }>(),
+    isOwner ? DB.prepare("SELECT status, due_at FROM invoices WHERE org_id = ? AND status <> 'draft'").bind(org.id).all<Pick<InvoiceRow, 'status' | 'due_at'>>() : null,
+    isOwner ? DB.prepare('SELECT * FROM payment_methods WHERE org_id = ?').bind(org.id).first<PaymentMethodRow>() : null,
+    DB.prepare("SELECT COUNT(*) AS n FROM passes p LEFT JOIN tournaments t ON t.id = p.tournament_id WHERE p.org_id = ? AND COALESCE(t.state, 'open') <> 'done'")
+      .bind(org.id)
+      .first<{ n: number }>(),
   ]);
   const body: PortalOrg = {
     id: org.id,
@@ -145,6 +151,9 @@ portalApp.get('/orgs/:id', async (c) => {
     plan: PLANS[org.plan],
     services: servicesOf(org),
     renewsAt: isOwner ? renewsAt(org) : null,
+    // Members don't see billing: for them it reads as Plus or Gratis only.
+    billingState: isOwner ? stateOf(org, invoices?.results ?? [], pm ?? null, now) : org.plan === 'plus' ? 'active' : 'free',
+    activePasses: activePasses?.n ?? 0,
     createdAt: org.created_at,
     // Billing contact and invoices are owners' business.
     contact: isOwner ? contactOut(contact) : { email: '', phone: '', address: [] },

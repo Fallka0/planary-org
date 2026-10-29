@@ -1,18 +1,24 @@
-// /portal/orgs/:id/billing, /checkout and /billing-portal (owners only). Stripe over REST;
-// without STRIPE_SECRET_KEY checkout and the billing portal answer 503 billing_not_configured.
-// The plan itself only ever changes from webhooks (routes/webhooks.ts).
+// /portal/orgs/:id/billing, checkout, pay-by, invoices/:iid/pay, cancel and /billing-portal
+// (owners only), and /portal/checkout for a person without an organisation. Stripe over REST;
+// without STRIPE_SECRET_KEY the paying routes answer 503 billing_not_configured.
+// The plan itself changes from webhooks (routes/webhooks.ts), except Plus on invoice, which
+// starts right away.
 
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
+import type { CheckoutResult, MemberRole, PayBy } from '../contract';
 import type { AppEnv, Env, PersonCtx } from '../env';
 import { auditStmt } from '../lib/audit';
-import { contactOf, contactOut, invoiceOut, invoicesOf, paymentMethodOut, renewsAt, type OrgRow, type PaymentMethodRow } from '../lib/orgs';
+import { billingOf, checkoutOut, keepOf, safeReturnTo, subscribed, type CheckoutRow } from '../lib/billing';
+import { contactOf, getOrg, validSlug, type OrgRow, type PaymentMethodRow } from '../lib/orgs';
 import { requireStripe, stripe } from '../lib/stripe';
-import { ApiError, bad, conflict, notFound, readJson, requireOneOf } from '../lib/util';
-import { planList } from '../plans';
+import { ApiError, bad, clean, conflict, email, notFound, randomId, readJson, requireOneOf, requireText } from '../lib/util';
+import { PASS, PLANS } from '../plans';
 import { ownerOf, portalActor } from './portal-access';
 
+type C = Context<AppEnv>;
+
 /** The organisation's Stripe customer, created on first use. */
-export async function ensureCustomer(env: Env, org: OrgRow, person: PersonCtx): Promise<string> {
+export async function ensureCustomer(env: Env, org: Pick<OrgRow, 'id' | 'name' | 'customer_id'>, person: PersonCtx): Promise<string> {
   if (org.customer_id) return org.customer_id;
   const contact = await contactOf(env, org.id);
   const customer = await stripe<{ id: string }>(
@@ -37,122 +43,315 @@ export async function ensureCustomer(env: Env, org: OrgRow, person: PersonCtx): 
   return customer.id;
 }
 
-const billingUrl = (env: Env, orgId: string) => `${env.PORTAL_URL}/${orgId}/abrechnung`;
+const portal = (env: Env) => env.PORTAL_URL.replace(/\/+$/, '');
+export const doneUrl = (env: Env, checkoutId: string) => `${portal(env)}/kasse/fertig?id=${encodeURIComponent(checkoutId)}`;
+const backUrl = (env: Env, orgId: string, body: ParsedCheckout) =>
+  body.kind === 'plan' ? `${portal(env)}/kasse?plan=plus&org=${encodeURIComponent(orgId)}` : `${portal(env)}/kasse?pass=tournament&tournament=${encodeURIComponent(body.tournamentId)}&org=${encodeURIComponent(orgId)}`;
 
-export function registerPortalBilling(app: Hono<AppEnv>) {
-  app.get('/orgs/:id/billing', async (c) => {
-    const { org } = await ownerOf(c);
-    const now = Date.now();
-    const [invoices, pm, contact] = await Promise.all([
-      invoicesOf(c.env, org.id),
-      c.env.DB.prepare('SELECT * FROM payment_methods WHERE org_id = ?').bind(org.id).first<PaymentMethodRow>(),
-      contactOf(c.env, org.id),
-    ]);
-    return c.json({
-      plans: planList(),
-      current: org.plan,
-      invoices: invoices.filter((i) => i.status !== 'draft').map((i) => invoiceOut(i, now)),
-      paymentMethod: paymentMethodOut(pm),
-      contact: contactOut(contact),
-      renewsAt: renewsAt(org),
-    });
-  });
+type ParsedCheckout = { kind: 'plan'; payBy: PayBy; returnTo: string | null } | { kind: 'pass'; tournamentId: string; returnTo: string | null };
 
-  app.post('/orgs/:id/checkout', async (c) => {
-    const { org, person } = await ownerOf(c);
-    requireStripe(c.env);
-    const body = await readJson(c);
-    const plan = requireOneOf(body.plan, ['event', 'verein'] as const, 'plan');
-    const payBy = body.payBy === undefined ? 'card' : requireOneOf(body.payBy, ['card', 'invoice'] as const, 'payBy');
-    const success = `${billingUrl(c.env, org.id)}?checkout=success`;
-    const cancel = `${billingUrl(c.env, org.id)}?checkout=cancel`;
+/** Checks the body against CheckoutBody: a plan (Plus, card or invoice) or a pass (card). */
+export function parseCheckout(body: Record<string, unknown>): ParsedCheckout {
+  const returnTo = safeReturnTo(body.returnTo);
+  if (body.plan !== undefined && body.pass !== undefined) throw bad('Send either plan or pass.', 'invalid_checkout');
+  if (body.plan !== undefined) {
+    requireOneOf(body.plan, ['plus'] as const, 'plan');
+    return { kind: 'plan', payBy: requireOneOf(body.payBy, ['card', 'invoice'] as const, 'payBy'), returnTo };
+  }
+  if (body.pass !== undefined) {
+    requireOneOf(body.pass, ['tournament'] as const, 'pass');
+    if (body.payBy !== undefined && body.payBy !== 'card') throw bad('The pass is paid by card.', 'invalid_payBy');
+    const tournamentId = clean(body.tournamentId, 101);
+    if (!tournamentId || tournamentId.length > 100) throw bad('Pick the tournament for the pass.', 'invalid_tournamentId');
+    return { kind: 'pass', tournamentId, returnTo };
+  }
+  throw bad('Send plan or pass.', 'invalid_checkout');
+}
 
-    if (plan === 'event') {
-      if (!c.env.STRIPE_PRICE_EVENT) throw new ApiError(503, 'Billing is not set up yet.', 'billing_not_configured');
-      if (typeof body.tournamentId !== 'string' || !body.tournamentId) throw bad('Pick the tournament for the event pass.', 'invalid_tournamentId');
-      const t = await c.env.DB.prepare('SELECT id, name, state FROM tournaments WHERE id = ? AND organisation_id = ?')
-        .bind(body.tournamentId, org.id)
-        .first<{ id: string; name: string; state: string }>();
-      if (!t) throw notFound('No tournament with that id in this organisation.');
-      if (t.state === 'done') throw conflict('This tournament is finished.', 'tournament_done');
-      if (await c.env.DB.prepare('SELECT 1 FROM event_passes WHERE tournament_id = ?').bind(t.id).first()) throw conflict('This tournament already has an event pass.', 'already_paid');
-      const customer = await ensureCustomer(c.env, org, person);
-      const session = await stripe<{ url: string }>(c.env, 'POST', '/checkout/sessions', {
-        mode: 'payment',
-        customer,
-        currency: 'chf',
-        payment_method_types: ['card', 'twint'],
-        line_items: [{ price: c.env.STRIPE_PRICE_EVENT, quantity: 1 }],
-        metadata: { org: org.id, tournament: t.id, plan: 'event' },
-        payment_intent_data: { metadata: { org: org.id, tournament: t.id } },
-        invoice_creation: { enabled: true, invoice_data: { description: `Plan Event, ${t.name}`, metadata: { org: org.id, tournament: t.id } } },
-        locale: 'de',
-        success_url: success,
-        cancel_url: cancel,
-      });
-      await c.env.DB.batch([
-        auditStmt(c.env, { area: 'portal', actor: portalActor(person), action: 'billing.checkout', sentence: 'Started a checkout', target: org.name, details: `Event, ${t.name}` }),
-      ]);
-      return c.json({ url: session.url });
-    }
+/** Starts a checkout for an organisation the caller owns. */
+export async function startCheckout(env: Env, org: OrgRow, person: PersonCtx, body: ParsedCheckout): Promise<CheckoutResult> {
+  requireStripe(env);
+  const now = Date.now();
+  const DB = env.DB;
+  const id = randomId('co');
+  const contact = await contactOf(env, org.id);
+  const receipt = contact?.email || person.email;
 
-    if (!c.env.STRIPE_PRICE_VEREIN) throw new ApiError(503, 'Billing is not set up yet.', 'billing_not_configured');
-    if (org.sub_plan === 'verein' && org.sub_state && ['active', 'past_due', 'trialing'].includes(org.sub_state)) {
-      throw conflict('This organisation already has the Verein plan.', 'already_subscribed');
-    }
-    const customer = await ensureCustomer(c.env, org, person);
+  if (body.kind === 'plan') {
+    if (!env.STRIPE_PRICE_PLUS) throw new ApiError(503, 'Billing is not set up yet.', 'billing_not_configured');
+    if (subscribed(org)) throw conflict('This organisation already has Plus.', 'already_subscribed');
+    const customer = await ensureCustomer(env, org, person);
+    const row = (state: 'pending' | 'paid', session: string | null) =>
+      DB.prepare(
+        `INSERT INTO checkouts (id, org_id, kind, pay_by, state, amount, session_id, receipt_email, return_to, created_by, created_at, updated_at)
+         VALUES (?, ?, 'plan', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(id, org.id, body.payBy, state, PLANS.plus.price, session, receipt, body.returnTo, person.id, now, now);
 
-    if (payBy === 'invoice') {
-      // No Checkout: the subscription bills by invoice, payable within 30 days.
-      const sub = await stripe<{ id: string; latest_invoice: { id: string; status: string; hosted_invoice_url: string | null } | null }>(
-        c.env,
+    if (body.payBy === 'invoice') {
+      // No card: the subscription bills by invoice (QR-bill), payable within 30 days. Plus starts now.
+      const sub = await stripe<{ id: string; status: string; current_period_end?: number; items?: { data?: { current_period_end?: number }[] } }>(
+        env,
         'POST',
         '/subscriptions',
         {
           customer,
-          items: [{ price: c.env.STRIPE_PRICE_VEREIN, quantity: 1 }],
+          items: [{ price: env.STRIPE_PRICE_PLUS, quantity: 1 }],
           collection_method: 'send_invoice',
           days_until_due: 30,
-          metadata: { org: org.id, plan: 'verein' },
-          expand: ['latest_invoice'],
+          metadata: { org: org.id, plan: 'plus', checkout: id },
         },
-        `subscription-invoice-${org.id}-${Math.floor(Date.now() / 3_600_000)}`,
+        `subscription-invoice-${org.id}-${Math.floor(now / 3_600_000)}`,
       );
-      let url = sub.latest_invoice?.hosted_invoice_url ?? null;
-      if (!url && sub.latest_invoice?.id && sub.latest_invoice.status === 'draft') {
-        const inv = await stripe<{ hosted_invoice_url: string | null }>(c.env, 'POST', `/invoices/${encodeURIComponent(sub.latest_invoice.id)}/finalize`, {});
-        url = inv.hosted_invoice_url;
-      }
-      await c.env.DB.batch([
-        c.env.DB.prepare("UPDATE subscriptions SET subscription_id = ?, collection_method = 'send_invoice', updated_at = ? WHERE org_id = ?").bind(sub.id, Date.now(), org.id),
-        auditStmt(c.env, { area: 'portal', actor: portalActor(person), action: 'billing.subscribe', sentence: 'Subscribed to a plan', target: org.name, details: 'Verein, by invoice' }),
+      const periodEnd = sub.current_period_end ?? sub.items?.data?.[0]?.current_period_end ?? null;
+      await DB.batch([
+        row('paid', null),
+        DB.prepare(
+          `UPDATE subscriptions SET plan = 'plus', state = ?, subscription_id = ?, collection_method = 'send_invoice', pay_by = 'invoice',
+             current_period_end = COALESCE(?, current_period_end), cancel_at = NULL, cancel_keep = NULL, updated_at = ? WHERE org_id = ?`,
+        ).bind(sub.status || 'active', sub.id, periodEnd ? periodEnd * 1000 : null, now, org.id),
+        auditStmt(env, { area: 'portal', actor: portalActor(person), action: 'billing.subscribe', sentence: 'Switched to Plus', target: org.name, details: 'Plus, by invoice' }),
       ]);
-      if (!url) throw new ApiError(502, "The invoice isn't ready yet. It arrives by e-mail.", 'invoice_pending');
-      return c.json({ url });
+      return { url: doneUrl(env, id), checkoutId: id };
     }
 
-    const session = await stripe<{ url: string }>(c.env, 'POST', '/checkout/sessions', {
+    const session = await stripe<{ id: string; url: string }>(env, 'POST', '/checkout/sessions', {
       mode: 'subscription',
       customer,
       payment_method_types: ['card'],
-      line_items: [{ price: c.env.STRIPE_PRICE_VEREIN, quantity: 1 }],
-      metadata: { org: org.id, plan: 'verein' },
-      subscription_data: { metadata: { org: org.id, plan: 'verein' } },
+      line_items: [{ price: env.STRIPE_PRICE_PLUS, quantity: 1 }],
+      metadata: { org: org.id, kind: 'plan', plan: 'plus', checkout: id },
+      subscription_data: { metadata: { org: org.id, plan: 'plus', checkout: id } },
       locale: 'de',
-      success_url: success,
-      cancel_url: cancel,
+      success_url: doneUrl(env, id),
+      cancel_url: backUrl(env, org.id, body),
     });
-    await c.env.DB.batch([
-      auditStmt(c.env, { area: 'portal', actor: portalActor(person), action: 'billing.checkout', sentence: 'Started a checkout', target: org.name, details: 'Verein, by card' }),
+    await DB.batch([
+      row('pending', session.id),
+      auditStmt(env, { area: 'portal', actor: portalActor(person), action: 'billing.checkout', sentence: 'Started a checkout', target: org.name, details: 'Plus, by card' }),
     ]);
-    return c.json({ url: session.url });
+    return { url: session.url, checkoutId: id };
+  }
+
+  if (!env.STRIPE_PRICE_PASS) throw new ApiError(503, 'Billing is not set up yet.', 'billing_not_configured');
+  // The tournament belongs to the organisation, or it is the buyer's own solo tournament.
+  const t = await DB.prepare('SELECT id, name, state, organisation_id, owner_id FROM tournaments WHERE id = ?')
+    .bind(body.tournamentId)
+    .first<{ id: string; name: string; state: string; organisation_id: string | null; owner_id: string }>();
+  if (!t || (t.organisation_id !== org.id && !(t.organisation_id === null && t.owner_id === person.id))) throw notFound('No tournament with that id in this organisation.');
+  if (t.state === 'done') throw conflict('This tournament is finished.', 'tournament_done');
+  if (await DB.prepare('SELECT 1 FROM passes WHERE tournament_id = ?').bind(t.id).first()) throw conflict('This tournament already has a pass.', 'already_paid');
+  const customer = await ensureCustomer(env, org, person);
+  const session = await stripe<{ id: string; url: string }>(env, 'POST', '/checkout/sessions', {
+    mode: 'payment',
+    customer,
+    currency: 'chf',
+    payment_method_types: ['card'],
+    line_items: [{ price: env.STRIPE_PRICE_PASS, quantity: 1 }],
+    metadata: { org: org.id, kind: 'pass', tournament: t.id, checkout: id },
+    payment_intent_data: { metadata: { org: org.id, tournament: t.id, checkout: id } },
+    invoice_creation: { enabled: true, invoice_data: { description: `${PASS.name}, ${t.name}`, metadata: { org: org.id, tournament: t.id } } },
+    locale: 'de',
+    success_url: doneUrl(env, id),
+    cancel_url: backUrl(env, org.id, body),
   });
+  await DB.batch([
+    DB.prepare(
+      `INSERT INTO checkouts (id, org_id, kind, pay_by, tournament_id, tournament_name, state, amount, session_id, receipt_email, return_to, created_by, created_at, updated_at)
+       VALUES (?, ?, 'pass', 'card', ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(id, org.id, t.id, t.name, PASS.price, session.id, receipt, body.returnTo, person.id, now, now),
+    auditStmt(env, { area: 'portal', actor: portalActor(person), action: 'billing.checkout', sentence: 'Started a checkout', target: org.name, details: `${PASS.name}, ${t.name}` }),
+  ]);
+  return { url: session.url, checkoutId: id };
+}
+
+/** "Spielclub Thun" → "spielclub-thun", unique among organisations. */
+async function freeSlug(env: Env, name: string) {
+  const base =
+    name
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 34) || 'organisation';
+  const padded = base.length < 3 ? `${base}-org` : base;
+  for (let i = 1; i < 50; i++) {
+    const slug = i === 1 ? padded : `${padded}-${i}`;
+    if (validSlug(slug) && !(await env.DB.prepare('SELECT 1 FROM organisations WHERE slug = ?').bind(slug).first())) return slug;
+  }
+  return `${padded.slice(0, 30)}-${randomId('', 6).slice(-6).toLowerCase()}`;
+}
+
+export function registerPortalBilling(app: Hono<AppEnv>) {
+  app.get('/orgs/:id/billing', async (c) => {
+    const { org } = await ownerOf(c);
+    return c.json(await billingOf(c.env, org, Date.now()));
+  });
+
+  app.post('/orgs/:id/checkout', async (c) => {
+    const { org, person } = await ownerOf(c);
+    return c.json(await startCheckout(c.env, org, person, parseCheckout(await readJson(c))));
+  });
+
+  /** A person without an organisation: it is created first (they own it), then the checkout starts. */
+  app.post('/checkout', async (c) => {
+    const person = c.get('person');
+    const body = await readJson(c);
+    const parsed = parseCheckout(body);
+    requireStripe(c.env);
+    const o = body.org && typeof body.org === 'object' ? (body.org as Record<string, unknown>) : null;
+    if (!o) throw bad('Name the organisation and its billing e-mail.', 'invalid_org');
+    const name = requireText(o.name, 'name', 80, { min: 2 });
+    const mail = email(o.email);
+    if (!mail) throw bad('Enter a valid e-mail address.', 'invalid_email');
+    const owned = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM members WHERE user_id = ? AND role = 'owner'").bind(person.id).first<{ n: number }>();
+    if ((owned?.n ?? 0) >= 20) throw new ApiError(429, 'You already own 20 organisations.', 'too_many_orgs');
+    if (parsed.kind === 'pass') {
+      // Check before creating anything: only the buyer's own solo tournament can get a pass here.
+      const t = await c.env.DB.prepare('SELECT organisation_id, owner_id, state FROM tournaments WHERE id = ?')
+        .bind(parsed.tournamentId)
+        .first<{ organisation_id: string | null; owner_id: string; state: string }>();
+      if (!t || t.owner_id !== person.id || t.organisation_id !== null) throw notFound('No tournament with that id of yours.');
+      if (t.state === 'done') throw conflict('This tournament is finished.', 'tournament_done');
+    }
+    const id = randomId('org');
+    const now = Date.now();
+    const DB = c.env.DB;
+    const slug = await freeSlug(c.env, name);
+    await DB.batch([
+      DB.prepare("INSERT INTO organisations (id, name, slug, services, created_by, created_at) VALUES (?, ?, ?, '[\"tournament\"]', ?, ?)").bind(id, name, slug, person.id, now),
+      DB.prepare("INSERT INTO members (org_id, user_id, name, email, role, last_active, created_at) VALUES (?, ?, ?, ?, 'owner', ?, ?)").bind(id, person.id, person.name, person.email, now, now),
+      DB.prepare("INSERT INTO subscriptions (org_id, plan, state, updated_at) VALUES (?, 'gratis', 'none', ?)").bind(id, now),
+      DB.prepare("INSERT INTO billing_contacts (org_id, email, phone, address, updated_at) VALUES (?, ?, '', '[]', ?)").bind(id, mail, now),
+      auditStmt(c.env, { area: 'portal', actor: portalActor(person), action: 'org.create', sentence: 'Created an organisation', target: name, details: `${slug}, at checkout` }),
+    ]);
+    const org = await getOrg(c.env, id, now);
+    if (!org) throw new ApiError(500, 'The organisation could not be created.', 'org_create_failed');
+    const result = await startCheckout(c.env, org, person, parsed);
+    return c.json({ ...result, orgId: id });
+  });
+
+  /** The done page polls this. Members of the organisation (or whoever started it) may read it. */
+  app.get('/checkout/:cid', async (c) => {
+    const person = c.get('person');
+    const DB = c.env.DB;
+    const row = await DB.prepare('SELECT * FROM checkouts WHERE id = ?').bind(c.req.param('cid')).first<CheckoutRow>();
+    if (!row) throw notFound('No checkout with that id.');
+    const member = await DB.prepare('SELECT role FROM members WHERE org_id = ? AND user_id = ?').bind(row.org_id, person.id).first<{ role: MemberRole }>();
+    if (!member && row.created_by !== person.id) throw notFound('No checkout with that id.');
+    return c.json(checkoutOut(row));
+  });
+
+  app.post('/orgs/:id/pay-by', async (c) => {
+    const { org, person } = await ownerOf(c);
+    const payBy = requireOneOf((await readJson(c)).payBy, ['card', 'invoice'] as const, 'payBy');
+    if (!subscribed(org) || !org.subscription_id) throw conflict('Only a Plus subscription has a way to pay.', 'no_subscription');
+    requireStripe(c.env);
+    if (payBy === 'card') {
+      const pm = await c.env.DB.prepare('SELECT * FROM payment_methods WHERE org_id = ?').bind(org.id).first<PaymentMethodRow>();
+      if (!pm || pm.kind !== 'card') throw conflict('Add a card first.', 'no_card');
+    }
+    await stripe(
+      c.env,
+      'POST',
+      `/subscriptions/${encodeURIComponent(org.subscription_id)}`,
+      payBy === 'invoice' ? { collection_method: 'send_invoice', days_until_due: 30 } : { collection_method: 'charge_automatically' },
+    );
+    const now = Date.now();
+    await c.env.DB.batch([
+      c.env.DB.prepare('UPDATE subscriptions SET pay_by = ?, collection_method = ?, updated_at = ? WHERE org_id = ?').bind(
+        payBy,
+        payBy === 'invoice' ? 'send_invoice' : 'charge_automatically',
+        now,
+        org.id,
+      ),
+      auditStmt(c.env, { area: 'portal', actor: portalActor(person), action: 'billing.pay_by', sentence: 'Changed how Plus is paid', target: org.name, details: payBy }),
+    ]);
+    return c.json({ ok: true });
+  });
+
+  app.post('/orgs/:id/invoices/:iid/pay', async (c) => {
+    const { org } = await ownerOf(c);
+    const inv = await c.env.DB.prepare('SELECT id, status, pay_url FROM invoices WHERE id = ? AND org_id = ?')
+      .bind(c.req.param('iid'), org.id)
+      .first<{ id: string; status: string; pay_url: string | null }>();
+    if (!inv) throw notFound('No invoice with that id.');
+    if (inv.status !== 'open') throw conflict('This invoice is not open.', 'invoice_not_open');
+    let url = inv.pay_url;
+    if (!url) {
+      requireStripe(c.env);
+      url = (await stripe<{ hosted_invoice_url: string | null }>(c.env, 'GET', `/invoices/${encodeURIComponent(inv.id)}`)).hosted_invoice_url;
+    }
+    if (!url) throw new ApiError(502, "The invoice isn't ready yet. It arrives by e-mail.", 'invoice_pending');
+    return c.json({ url });
+  });
+
+  app.post('/orgs/:id/cancel', async (c) => cancel(c, true));
+  app.post('/orgs/:id/cancel/undo', async (c) => cancel(c, false));
 
   app.post('/orgs/:id/billing-portal', async (c) => {
     const { org, person } = await ownerOf(c);
     requireStripe(c.env);
     const customer = await ensureCustomer(c.env, org, person);
-    const session = await stripe<{ url: string }>(c.env, 'POST', '/billing_portal/sessions', { customer, return_url: billingUrl(c.env, org.id), locale: 'de' });
+    const session = await stripe<{ url: string }>(c.env, 'POST', '/billing_portal/sessions', { customer, return_url: `${portal(c.env)}/abrechnung`, locale: 'de' });
     return c.json({ url: session.url });
   });
 }
+
+/** Switch to Gratis at the end of the paid year (`on`), or stay on Plus (`!on`). */
+async function cancel(c: C, on: boolean) {
+  const { org, person } = await ownerOf(c);
+  if (!subscribed(org) || !org.subscription_id) throw conflict('Only a Plus subscription can be cancelled here.', 'no_subscription');
+  const DB = c.env.DB;
+  const now = Date.now();
+  if (!on) {
+    if (!org.cancel_at) return c.json({ ok: true });
+    requireStripe(c.env);
+    await stripe(c.env, 'POST', `/subscriptions/${encodeURIComponent(org.subscription_id)}`, { cancel_at_period_end: false });
+    await DB.batch([
+      DB.prepare('UPDATE subscriptions SET cancel_at = NULL, cancel_keep = NULL, updated_at = ? WHERE org_id = ?').bind(now, org.id),
+      auditStmt(c.env, { area: 'portal', actor: portalActor(person), action: 'billing.cancel_undo', sentence: 'Stayed on Plus', target: org.name }),
+    ]);
+    return c.json({ ok: true });
+  }
+  const body = await readJson(c);
+  if (!Array.isArray(body.keep) || body.keep.some((k) => typeof k !== 'string')) throw bad('keep is a list of member ids.', 'invalid_keep');
+  const { results: members } = await DB.prepare('SELECT user_id, role FROM members WHERE org_id = ?').bind(org.id).all<{ user_id: string; role: MemberRole }>();
+  const seats = PLANS.gratis.limits.maxOrganisers;
+  let keep = [...new Set(body.keep as string[])];
+  if (members.length <= seats) keep = members.map((m) => m.user_id);
+  else {
+    if (keep.length < 1 || keep.length > seats) throw bad(`Pick 1 to ${seats} people who keep organising.`, 'invalid_keep');
+    if (keep.some((k) => !members.find((m) => m.user_id === k))) throw bad('Everyone you keep must be a member.', 'invalid_keep');
+    if (!keep.some((k) => members.find((m) => m.user_id === k)?.role === 'owner')) throw bad('Keep at least one owner.', 'keep_owner');
+  }
+  requireStripe(c.env);
+  const sub = await stripe<{ current_period_end?: number; cancel_at?: number | null; items?: { data?: { current_period_end?: number }[] } }>(
+    c.env,
+    'POST',
+    `/subscriptions/${encodeURIComponent(org.subscription_id)}`,
+    { cancel_at_period_end: true },
+  );
+  const end = (sub.cancel_at ?? sub.current_period_end ?? sub.items?.data?.[0]?.current_period_end ?? 0) * 1000 || org.current_period_end;
+  if (!end) throw new ApiError(502, "The payment provider didn't say when the year ends.", 'billing_error');
+  await DB.batch([
+    DB.prepare('UPDATE subscriptions SET cancel_at = ?, cancel_keep = ?, updated_at = ? WHERE org_id = ?').bind(end, JSON.stringify(keep), now, org.id),
+    auditStmt(c.env, { area: 'portal', actor: portalActor(person), action: 'billing.cancel', sentence: 'Switched to Gratis at the end of the year', target: org.name, details: `on ${new Date(end).toISOString().slice(0, 10)}, keeps ${keep.length}` }),
+  ]);
+  return c.json({ cancelAt: end });
+}
+
+/**
+ * After a switch to Gratis takes effect: the members who weren't kept leave the organisation.
+ * Their Planary accounts stay. Idempotent; runs from the subscription.deleted webhook and daily.
+ */
+export function applySwitchStmts(env: Env, org: Pick<OrgRow, 'id' | 'cancel_keep'>, now: number): D1PreparedStatement[] {
+  const keep = keepOf(org);
+  const out: D1PreparedStatement[] = [];
+  if (keep.length) {
+    out.push(env.DB.prepare(`DELETE FROM members WHERE org_id = ? AND user_id NOT IN (${keep.map(() => '?').join(', ')})`).bind(org.id, ...keep));
+  }
+  out.push(env.DB.prepare('UPDATE subscriptions SET cancel_at = NULL, cancel_keep = NULL, updated_at = ? WHERE org_id = ?').bind(now, org.id));
+  return out;
+}
+

@@ -11,7 +11,12 @@
 
 // ── shared ───────────────────────────────────────────
 
-export type PlanId = 'gratis' | 'event' | 'verein';
+/** The organisation's tier. 'pro' is reserved for a bigger tier above Plus, not built yet. */
+export type PlanId = 'gratis' | 'plus';
+/** One-off purchases, named after what they unlock. The pass is an entitlement on one tournament. */
+export type PassId = 'tournament_pass';
+/** How the organisation pays its subscription. TWINT is left room for, not offered yet. */
+export type PayBy = 'card' | 'invoice';
 export type StaffRole = 'owner' | 'manager' | 'support' | 'viewer';
 export type MemberRole = 'owner' | 'member';
 export type Access = 'edit' | 'read' | 'none';
@@ -65,14 +70,83 @@ export interface WishlistLimits {
 export interface Plan {
   id: PlanId;
   name: string;
-  /** Rappen. Event: per tournament. Verein: per month, billed yearly. */
+  /** Rappen. Plus: per year, one invoice. */
   price: number;
-  period: 'forever' | 'tournament' | 'month_yearly';
-  /** True until Planary sets real prices: every surface shows a "Platzhalter" chip. */
-  placeholder: boolean;
+  period: 'forever' | 'year';
   /** Tournament's limits (kept under this name for the Tournament API). */
   limits: PlanLimits;
   wishlist: WishlistLimits;
+}
+
+/** The Turnier-Pass: CHF 29 once, for one tournament, gives it Plus's tournament limits. */
+export interface Pass {
+  id: PassId;
+  /** "Turnier-Pass" (German surfaces); `nameEn` "Tournament Pass" for English ones. */
+  name: string;
+  nameEn: string;
+  /** Rappen, once per tournament. */
+  price: number;
+  period: 'tournament';
+  limits: PlanLimits;
+}
+
+/** A pass bought for one tournament. Passes stack: one per tournament, any number. */
+export interface PassEntitlement {
+  id: string;
+  tournamentId: string;
+  tournamentName: string;
+  boughtAt: number;
+  /** Rappen */
+  amount: number;
+  /** 'done' once the tournament is finished: it keeps everything, read-only beyond Gratis limits. */
+  state: 'active' | 'done';
+  teams: number;
+  invoiceId: string | null;
+  receiptUrl: string | null;
+}
+
+/** One line of the subscription or an invoice: the base plan, an add-on, or a one-off. */
+export interface SubscriptionLine {
+  kind: 'base' | 'addon' | 'once';
+  /** "Plus", "Turnier-Pass · Planary Winter Cup" */
+  name: string;
+  period: 'year' | 'once';
+  /** Rappen */
+  amount: number;
+  tournamentId: string | null;
+}
+
+/** free: Gratis without anything open. card_expires: the card expires before the renewal. */
+export type BillingState = 'free' | 'active' | 'overdue' | 'card_expires' | 'canceling';
+
+/** The checkout body: a plan (Plus, by card or invoice) or a pass (one tournament, by card). */
+export type CheckoutBody =
+  | { plan: 'plus'; payBy: PayBy; returnTo?: string }
+  | { pass: 'tournament'; tournamentId: string; returnTo?: string };
+
+export interface CheckoutResult {
+  /** Card: the provider's checkout page. Invoice (Plus): the portal's done page, nothing charged today. */
+  url: string;
+  checkoutId: string;
+}
+
+export interface CheckoutStatus {
+  id: string;
+  orgId: string;
+  kind: 'plan' | 'pass';
+  state: 'pending' | 'paid' | 'failed';
+  /** Why a card payment failed, in German, when the provider says so. */
+  failure: string | null;
+  /** Rappen charged today (0 for Plus on invoice). */
+  amount: number;
+  payBy: PayBy;
+  tournamentId: string | null;
+  tournamentName: string | null;
+  /** Where the receipt went. */
+  receiptEmail: string;
+  receiptUrl: string | null;
+  /** The page to go back to, e.g. the tournament being edited. Only planary.ch hosts. */
+  returnTo: string | null;
 }
 
 export interface Invoice {
@@ -84,8 +158,12 @@ export interface Invoice {
   amount: number;
   currency: 'CHF';
   status: InvoiceStatus;
-  /** What it covers, e.g. "Plan Verein, 3.2.2026 bis 2.2.2027". */
+  /** What it covers, e.g. "Plus, 3.2.2026 bis 2.2.2027". */
   description: string;
+  /** The lines that make up `amount`. */
+  lines: SubscriptionLine[];
+  /** How it was paid, once paid. */
+  paidWith: PayBy | null;
   /** Whole days past due while open, else 0. */
   overdueDays: number;
   pdfUrl: string | null;
@@ -355,8 +433,11 @@ export interface PortalOrg {
   role: MemberRole;
   plan: Plan;
   services: OrgService[];
-  /** Verein: next renewal. */
+  /** Plus: next renewal. */
   renewsAt: number | null;
+  billingState: BillingState;
+  /** Gratis organisations: passes on tournaments that aren't finished. */
+  activePasses: number;
   createdAt: number;
   contact: BillingContact;
   usage: { tournamentsThisYear: number; largestTournament: number; organisers: number };
@@ -430,8 +511,20 @@ export interface PortalApi {
   'GET /portal/orgs/:id/tournaments/:tid': { R: PortalTournamentDetail };
   /** 404 while Wishlist is off for the organisation. */
   'GET /portal/orgs/:id/wishlists': { R: PortalWishlists };
-  'GET /portal/orgs/:id/billing': { R: { plans: Plan[]; current: PlanId; invoices: Invoice[]; paymentMethod: PaymentMethod | null; contact: BillingContact; renewsAt: number | null } };
-  'POST /portal/orgs/:id/checkout': { B: { plan: 'event' | 'verein'; tournamentId?: string; payBy?: 'card' | 'invoice' }; R: { url: string } };
+  /** Owners only. */
+  'GET /portal/orgs/:id/billing': { R: Billing };
+  /** Owners only. Pass: the tournament must belong to the organisation (or its owner, who joins it). */
+  'POST /portal/orgs/:id/checkout': { B: CheckoutBody; R: CheckoutResult };
+  /** A person without an organisation: creates it (they become owner), then checks out. */
+  'POST /portal/checkout': { B: CheckoutBody & { org: { name: string; email: string } }; R: CheckoutResult & { orgId: string } };
+  'GET /portal/checkout/:cid': { R: CheckoutStatus };
+  /** Plus: switch between card and invoice for the next renewal. */
+  'POST /portal/orgs/:id/pay-by': { B: { payBy: PayBy }; R: { ok: true } };
+  /** The provider's hosted page for one open invoice. */
+  'POST /portal/orgs/:id/invoices/:iid/pay': { R: { url: string } };
+  /** Switch to Gratis at the end of the paid year. `keep`: the members who keep organising (Gratis seats). */
+  'POST /portal/orgs/:id/cancel': { B: { keep: string[] }; R: { cancelAt: number } };
+  'POST /portal/orgs/:id/cancel/undo': { R: { ok: true } };
   'POST /portal/orgs/:id/billing-portal': { R: { url: string } };
   'GET /portal/orgs/:id/members': { R: { members: PortalMember[]; invites: PortalInvite[]; seats: number } };
   'POST /portal/orgs/:id/invites': { B: { email: string; role: MemberRole }; R: { ok: true } };
@@ -450,8 +543,32 @@ export interface PortalApi {
 
 // ── internal (other Planary workers) ─────────────────
 
+export interface Billing {
+  plans: Plan[];
+  pass: Pass;
+  current: PlanId;
+  state: BillingState;
+  /** Plus and its add-ons; passes bought this year appear as 'once' lines. */
+  lines: SubscriptionLine[];
+  passes: PassEntitlement[];
+  invoices: Invoice[];
+  paymentMethod: PaymentMethod | null;
+  payBy: PayBy | null;
+  contact: BillingContact;
+  renewsAt: number | null;
+  /** 30 days before renewal. */
+  reminderAt: number | null;
+  /** Overdue: Plus runs normally until then; after it, new tournaments get Gratis limits. */
+  graceUntil: number | null;
+  /** Canceling: the day the organisation is on Gratis. */
+  cancelAt: number | null;
+  usage: { largestTournament: number; running: number; organisers: number; wishlists: number };
+}
+
 export interface LimitsResponse {
   plan: PlanId;
+  /** source 'event_pass': the tournament asked about has a pass. */
+  passTournamentId?: string | null;
   limits: PlanLimits;
   /** Running tournaments the owner (organisation or person) has now. */
   running: number;
