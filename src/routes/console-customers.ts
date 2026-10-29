@@ -16,7 +16,6 @@ import {
   ORG_SELECT,
   overdueDays,
   paymentMethodOut,
-  planCutoff,
   renewsAt,
   servicesOf,
   type InvoiceRow,
@@ -27,27 +26,29 @@ import { REQUEST_SELECT, requestSummary, type RequestRow } from '../lib/requests
 import { THIS_YEAR_SQL, thisYear, TOURNAMENT_ORDER, TOURNAMENT_SELECT, tournamentOut, type TournamentRow } from '../lib/tournaments';
 import { ApiError, chf, clean, DAY, initials, notFound, oneOf, randomId, readJson, requireOneOf, requireText } from '../lib/util';
 import { can } from '../permissions';
-import { PLAN_IDS, planName } from '../plans';
+import { PLAN_IDS, planName, PLANS } from '../plans';
 import { actorOf, need } from './guard';
 
 async function customerRows(env: Env, now: number): Promise<CustomerRow[]> {
   const DB = env.DB;
-  const [orgs, members, tournaments, invoices, methods] = await Promise.all([
-    DB.prepare(`${ORG_SELECT} ORDER BY o.name`).bind(planCutoff(now)).all<OrgRow>(),
+  const [orgs, members, tournaments, invoices, methods, passes] = await Promise.all([
+    DB.prepare(`${ORG_SELECT} ORDER BY o.name`).all<OrgRow>(),
     DB.prepare('SELECT org_id, COUNT(*) AS n FROM members GROUP BY org_id').all<{ org_id: string; n: number }>(),
     DB.prepare(`SELECT t.organisation_id AS org_id, COUNT(*) AS n FROM tournaments t WHERE t.organisation_id IS NOT NULL AND ${THIS_YEAR_SQL} GROUP BY t.organisation_id`)
       .bind(thisYear(now))
       .all<{ org_id: string; n: number }>(),
     DB.prepare('SELECT org_id, status, due_at, amount, paid_at, created_at FROM invoices').all<Pick<InvoiceRow, 'org_id' | 'status' | 'due_at' | 'amount' | 'paid_at' | 'created_at'>>(),
     DB.prepare('SELECT * FROM payment_methods').all<PaymentMethodRow>(),
+    DB.prepare('SELECT org_id, SUM(amount) AS n FROM passes WHERE created_at >= ? GROUP BY org_id').bind(now - 365 * DAY).all<{ org_id: string; n: number }>(),
   ]);
   const count = (list: { org_id: string; n: number }[]) => new Map(list.map((r) => [r.org_id, r.n]));
   const memberCount = count(members.results);
   const tournamentCount = count(tournaments.results);
+  const passRevenue = count(passes.results);
   const pms = new Map(methods.results.map((p) => [p.org_id, p]));
   const invByOrg = new Map<string, typeof invoices.results>();
   for (const inv of invoices.results) invByOrg.set(inv.org_id, [...(invByOrg.get(inv.org_id) ?? []), inv]);
-  return orgs.results.map((o) => toRow(o, invByOrg.get(o.id) ?? [], pms.get(o.id) ?? null, memberCount.get(o.id) ?? 0, tournamentCount.get(o.id) ?? 0, now));
+  return orgs.results.map((o) => toRow(o, invByOrg.get(o.id) ?? [], pms.get(o.id) ?? null, memberCount.get(o.id) ?? 0, tournamentCount.get(o.id) ?? 0, now, passRevenue.get(o.id) ?? 0));
 }
 
 function toRow(
@@ -57,9 +58,11 @@ function toRow(
   members: number,
   tournaments: number,
   now: number,
+  passRevenue: number,
 ): CustomerRow {
   const { billing, overdueDays: overdue } = billingState(o.plan, invoices, pm, now);
-  const revenueYear = invoices.filter((i) => i.status === 'paid' && (i.paid_at ?? i.created_at) >= now - 365 * DAY).reduce((a, i) => a + i.amount, 0);
+  // What the organisation brings in a year: Plus, plus the passes of the last twelve months.
+  const revenueYear = (o.plan === 'plus' ? PLANS.plus.price : 0) + passRevenue;
   return {
     id: o.id,
     name: o.name,
@@ -140,7 +143,7 @@ export function registerCustomers(app: Hono<AppEnv>) {
     if (!org) throw notFound('No organisation with that id.');
     const role = c.get('staff').role;
     const DB = c.env.DB;
-    const [invoices, pm, contact, members, tournaments, notes, requests, tCount] = await Promise.all([
+    const [invoices, pm, contact, members, tournaments, notes, requests, tCount, passSum] = await Promise.all([
       invoicesOf(c.env, org.id),
       DB.prepare('SELECT * FROM payment_methods WHERE org_id = ?').bind(org.id).first<PaymentMethodRow>(),
       contactOf(c.env, org.id),
@@ -157,8 +160,9 @@ export function registerCustomers(app: Hono<AppEnv>) {
         ? DB.prepare(`${REQUEST_SELECT} WHERE r.org_id = ? ORDER BY r.updated_at DESC LIMIT 50`).bind(org.id).all<RequestRow>()
         : Promise.resolve({ results: [] as RequestRow[] }),
       DB.prepare(`SELECT COUNT(*) AS n FROM tournaments t WHERE t.organisation_id = ? AND ${THIS_YEAR_SQL}`).bind(org.id, thisYear(now)).first<{ n: number }>(),
+      DB.prepare('SELECT COALESCE(SUM(amount), 0) AS n FROM passes WHERE org_id = ? AND created_at >= ?').bind(org.id, now - 365 * DAY).first<{ n: number }>(),
     ]);
-    const row = toRow(org, invoices, pm, members.results.length, tCount?.n ?? 0, now);
+    const row = toRow(org, invoices, pm, members.results.length, tCount?.n ?? 0, now, passSum?.n ?? 0);
     const detail: CustomerDetail = {
       ...row,
       slug: org.slug,
@@ -236,7 +240,7 @@ export function registerCustomers(app: Hono<AppEnv>) {
     return c.json({ ok: true });
   });
 
-  /** Staff set the plan (e.g. comp Verein); no charge is created at the provider. */
+  /** Staff set the plan (e.g. comp Plus); no charge is created at the provider. */
   app.post('/customers/:id/plan', need('customers'), async (c) => {
     const org = await getOrg(c.env, c.req.param('id'));
     if (!org) throw notFound('No organisation with that id.');

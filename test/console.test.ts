@@ -124,7 +124,7 @@ describe('permission matrix', () => {
     expect(me.access).toMatchObject({ casino: 'none', audit: 'none', staff: 'none', support: 'edit', notes: 'edit', customers: 'read' });
     expect((await get('/console/audit', { who: SUPPORT })).status).toBe(403);
     expect((await get('/console/staff', { who: SUPPORT })).status).toBe(403);
-    expect((await post('/console/customers/x/plan', { plan: 'verein', reason: 'x' }, { who: SUPPORT })).status).toBe(403);
+    expect((await post('/console/customers/x/plan', { plan: 'plus', reason: 'x' }, { who: SUPPORT })).status).toBe(403);
   });
 
   it("doesn't let managers touch staff", async () => {
@@ -171,7 +171,7 @@ describe('audit log', () => {
       [`/console/incidents/${created.id}/notify`, { message: 'Wir sind dran.' }, 'incident.notify', 'Notified organisers about an incident'],
       ['/console/customers/org_gurten/notes', { body: 'Treasurer pays on the 25th.' }, 'customer.note', 'Added a customer note'],
       ['/console/customers/org_gurten/reminder', { invoiceId: 'in_1' }, 'invoice.reminder', 'Sent a payment reminder'],
-      ['/console/customers/org_gurten/plan', { plan: 'event', reason: 'Comp for the LAN' }, 'customer.plan', 'Changed a plan'],
+      ['/console/customers/org_gurten/plan', { plan: 'plus', reason: 'Comp for the LAN' }, 'customer.plan', 'Changed a plan'],
       ['/console/support/req_1/messages', { kind: 'staff', body: 'Hallo Matteo', setStatus: 'waiting' }, 'request.reply', 'Replied to a support request'],
       ['/console/support/req_1/messages', { kind: 'internal', body: 'Linked to INC' }, 'request.note', 'Added an internal note'],
       ['/console/support/req_1', { assigneeId: SUPPORT.id }, 'request.assign', 'Assigned a support request'],
@@ -190,7 +190,7 @@ describe('audit log', () => {
     }
     const rows = await auditRows();
     expect(rows[0]).toMatchObject({ action: 'incident.open', target: 'INC-0001', area: 'incidents' });
-    expect(rows.find((r) => r.action === 'customer.plan')).toMatchObject({ target: 'Verein Gurten LAN', details: 'Gratis → Event: Comp for the LAN' });
+    expect(rows.find((r) => r.action === 'customer.plan')).toMatchObject({ target: 'Verein Gurten LAN', details: 'Gratis → Plus: Comp for the LAN' });
     expect(rows.find((r) => r.action === 'invoice.reminder')).toMatchObject({ target: 'Invoice 2026-0142', details: 'Verein Gurten LAN, 1st reminder' });
     expect(rows.find((r) => r.action === 'request.reply')).toMatchObject({ target: 'REQ-1184', details: 'set to waiting' });
     expect(rows.find((r) => r.action === 'staff.role')).toMatchObject({ target: 'Tim Roth', details: 'viewer → support' });
@@ -232,7 +232,7 @@ describe('customers', () => {
     await addOrg('org_uni', 'Uni Bern Gaming', []);
     await addOrg('org_free', 'TTC Ostermundigen', []);
     await env.DB.batch([
-      env.DB.prepare("UPDATE subscriptions SET plan = 'verein', state = 'active', current_period_end = ? WHERE org_id IN ('org_gurten', 'org_uni')").bind(now + 100 * DAY),
+      env.DB.prepare("UPDATE subscriptions SET plan = 'plus', state = 'active', current_period_end = ? WHERE org_id IN ('org_gurten', 'org_uni')").bind(now + 100 * DAY),
       env.DB.prepare(
         "INSERT INTO invoices (id, org_id, number, created_at, due_at, amount, status, pay_url, updated_at) VALUES ('in_open', 'org_gurten', '2026-0142', ?, ?, 22800, 'open', 'https://pay.stripe.test/in_open', ?)",
       ).bind(now - 26 * DAY, now - 12 * DAY - 3_600_000, now),
@@ -254,8 +254,8 @@ describe('customers', () => {
   it('computes overdue, card expiry, free and revenue', async () => {
     const { customers } = await json(get('/console/customers', { who: VIEWER }));
     const by = Object.fromEntries(customers.map((c: any) => [c.id, c]));
-    expect(by.org_gurten).toMatchObject({ plan: 'verein', billing: 'overdue', overdueDays: 12, revenueYear: 4900, initials: 'GL', tournamentsThisYear: 1, members: 1 });
-    expect(by.org_uni).toMatchObject({ billing: 'card_expires', revenueYear: 22800 });
+    expect(by.org_gurten).toMatchObject({ plan: 'plus', billing: 'overdue', overdueDays: 12, revenueYear: 14900, initials: 'GL', tournamentsThisYear: 1, members: 1 });
+    expect(by.org_uni).toMatchObject({ billing: 'card_expires', revenueYear: 14900 });
     expect(by.org_free).toMatchObject({ plan: 'gratis', billing: 'free', revenueYear: 0 });
     const overdue = await json(get('/console/customers?overdue=1', { who: VIEWER }));
     expect(overdue.customers.map((c: any) => c.id)).toEqual(['org_gurten']);
@@ -277,7 +277,7 @@ describe('customers', () => {
     expect(text.startsWith('﻿id,name,plan')).toBe(true);
     expect(text).toContain('"Club ""Ping, Pong""\nNacht"');
     expect(text).toContain(`"'=HYPERLINK(""x"")"`);
-    expect(text).toMatch(/org_gurten,Verein Gurten LAN,verein,1,1,49\.00,overdue,12,\d{4}-\d{2}-\d{2}/);
+    expect(text).toMatch(/org_gurten,Verein Gurten LAN,plus,1,1,149\.00,overdue,12,\d{4}-\d{2}-\d{2}/);
     expect(csvField('plain')).toBe('plain');
     expect(csvField(null)).toBe('');
     expect(customersCsv([]).trim()).toBe('id,name,plan,members,tournaments_this_year,revenue_year_chf,billing,overdue_days,customer_since');
@@ -292,11 +292,11 @@ describe('customers', () => {
 
   it('applies a staff plan change without charging', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    expect((await post('/console/customers/org_free/plan', { plan: 'verein', reason: 'Partner club' }, { who: MANAGER })).status).toBe(200);
+    expect((await post('/console/customers/org_free/plan', { plan: 'plus', reason: 'Partner club' }, { who: MANAGER })).status).toBe(200);
     expect(fetchSpy).not.toHaveBeenCalled();
     const detail = await json(get('/console/customers/org_free', { who: VIEWER }));
-    expect(detail.plan).toBe('verein');
-    expect((await post('/console/customers/org_free/plan', { plan: 'verein' }, { who: MANAGER })).status).toBe(400);
+    expect(detail.plan).toBe('plus');
+    expect((await post('/console/customers/org_free/plan', { plan: 'plus' }, { who: MANAGER })).status).toBe(400);
   });
 });
 
@@ -351,7 +351,7 @@ describe('overview, search and wishlist', () => {
 
   it('builds the overview from auth and stats', async () => {
     await addOrg('org_a', 'Aare Esports Club', []);
-    await env.DB.prepare("UPDATE subscriptions SET plan = 'verein', state = 'active' WHERE org_id = 'org_a'").run();
+    await env.DB.prepare("UPDATE subscriptions SET plan = 'plus', state = 'active' WHERE org_id = 'org_a'").run();
     await addOrg('org_b', 'Bümpliz Gaming', []);
     const o = await json(get('/console/overview?days=7', { who: VIEWER }));
     expect(o).toMatchObject({ days: 7, accounts: 12480, organisations: 2, paidOrganisations: 1, signupsPrev: 7, accountsNew7: 14, activeToday: 20 });

@@ -4,9 +4,10 @@ import { Hono } from 'hono';
 import type { LimitsResponse, MemberRole, PlanId, ServiceId, TournamentState } from '../contract';
 import type { AppEnv, Env } from '../env';
 import { internalKeyOk } from '../lib/auth';
-import { getOrg, ORG_SELECT, planCutoff, servicesOf, tournamentBanners, type OrgRow } from '../lib/orgs';
-import { bad, clean, errorBody, initials, int, MINUTE, notFound, oneOf, readJson, requireOneOf, requireText } from '../lib/util';
-import { PLAN_IDS, PLANS } from '../plans';
+import { pastGrace } from '../lib/billing';
+import { getOrg, graceUntil, ORG_SELECT, servicesOf, tournamentBanners, type OrgRow } from '../lib/orgs';
+import { bad, clean, errorBody, initials, int, MINUTE, notFound, readJson, requireOneOf, requireText } from '../lib/util';
+import { PASS, PLANS, planOf } from '../plans';
 import { SERVICE_IDS } from '../services';
 
 export const internalApp = new Hono<AppEnv>();
@@ -29,15 +30,18 @@ async function running(env: Env, where: string, bind: unknown[]) {
 }
 
 /**
- * The limits Tournament enforces: Verein (or a staff-set plan) on the organisation, else an
- * event pass on the tournament, else Gratis. `running` counts the owner's live tournaments.
+ * The limits Tournament enforces: Plus (or a staff-set plan) on the organisation, else a pass on
+ * the tournament, else Gratis. Past the grace date of an overdue invoice, a Plus organisation's
+ * new tournaments (no `tournament`, or one created after the grace date) get Gratis limits;
+ * running and planned ones keep Plus. `running` counts the owner's live tournaments.
  */
 internalApp.get('/limits', async (c) => {
   const user = id(c.req.query('user'), 'user');
   const orgId = optId(c.req.query('org'), 'org');
   const tournamentId = optId(c.req.query('tournament'), 'tournament');
   const now = Date.now();
-  const respond = (plan: PlanId, source: LimitsResponse['source'], n: number) => c.json({ plan, limits: PLANS[plan].limits, running: n, source } satisfies LimitsResponse);
+  const respond = (plan: PlanId, source: LimitsResponse['source'], n: number, limits = PLANS[plan].limits, passTournamentId: string | null = null) =>
+    c.json({ plan, passTournamentId, limits, running: n, source } satisfies LimitsResponse);
 
   let org = null;
   if (orgId) {
@@ -46,13 +50,19 @@ internalApp.get('/limits', async (c) => {
   }
   const runningNow = org ? await running(c.env, 'organisation_id = ?', [org.id]) : await running(c.env, 'owner_id = ? AND organisation_id IS NULL', [user]);
 
-  if (org) {
-    const orgPlan = org.plan_override ?? (org.plan === 'verein' ? 'verein' : null);
-    if (orgPlan && orgPlan !== 'gratis') return respond(orgPlan, 'organisation', runningNow);
+  if (org?.plan === 'plus') {
+    let paused = !org.plan_override && (await pastGrace(c.env, org.id, now));
+    if (paused && tournamentId) {
+      // A tournament that existed before the grace date ran out keeps Plus.
+      const t = await c.env.DB.prepare('SELECT created_at, updated_at FROM tournaments WHERE id = ?').bind(tournamentId).first<{ created_at: number | null; updated_at: number }>();
+      const due = await c.env.DB.prepare("SELECT MIN(due_at) AS due FROM invoices WHERE org_id = ? AND status = 'open' AND due_at IS NOT NULL").bind(org.id).first<{ due: number | null }>();
+      if (t && due?.due != null && (t.created_at ?? t.updated_at) < graceUntil(due.due)) paused = false;
+    }
+    if (!paused) return respond('plus', 'organisation', runningNow);
   }
-  if (tournamentId && !(org?.plan_override === 'gratis')) {
-    const pass = await c.env.DB.prepare('SELECT 1 FROM event_passes WHERE tournament_id = ?').bind(tournamentId).first();
-    if (pass) return respond('event', 'event_pass', runningNow);
+  if (tournamentId && org?.plan_override !== 'gratis') {
+    const pass = await c.env.DB.prepare('SELECT tournament_id FROM passes WHERE tournament_id = ?').bind(tournamentId).first<{ tournament_id: string }>();
+    if (pass) return respond('gratis', 'event_pass', runningNow, PASS.limits, pass.tournament_id);
   }
   return respond('gratis', org ? 'organisation' : 'person', runningNow);
 });
@@ -69,7 +79,7 @@ internalApp.get('/orgs/:id/membership', async (c) => {
 internalApp.get('/people/:id/orgs', async (c) => {
   const user = id(c.req.param('id'), 'user');
   const { results } = await c.env.DB.prepare(`SELECT x.*, m.role AS member_role FROM (${ORG_SELECT}) x JOIN members m ON m.org_id = x.id WHERE m.user_id = ? AND x.delete_at IS NULL ORDER BY x.name`)
-    .bind(planCutoff(Date.now()), user)
+    .bind(user)
     .all<OrgRow & { member_role: MemberRole }>();
   return c.json({
     orgs: results.map((o) => ({ id: o.id, name: o.name, initials: initials(o.name), role: o.member_role, plan: o.plan, services: servicesOf(o), wishlist: PLANS[o.plan].wishlist })),
@@ -117,7 +127,8 @@ internalApp.post('/tournament-events', async (c) => {
     organisation_id: optId(b.organisationId, 'organisationId'),
     owner_id: id(b.ownerId, 'ownerId'),
     organisation_name: clean(b.organisationName, 120) || null,
-    plan: oneOf(b.plan, PLAN_IDS) ?? 'gratis',
+    // Older Tournament builds report 'verein' and 'event'.
+    plan: planOf(b.plan),
     viewers: int(b.viewers, 0, 10_000_000, 0),
     organisers: JSON.stringify(organisers),
     played: int(b.played, 0, 100_000, 0),

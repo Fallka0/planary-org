@@ -3,6 +3,7 @@
 import type { Env } from './env';
 import { stripe, stripeConfigured } from './lib/stripe';
 import { auditStmt } from './lib/audit';
+import { applySwitchStmts } from './routes/portal-billing';
 import { cleanUpMonitoring, refreshDeploys, runChecks } from './services';
 
 export const EVERY_MINUTE = '* * * * *';
@@ -22,6 +23,18 @@ export async function dailyCleanup(env: Env, now = Date.now()) {
     .bind(now, now - 90 * 86_400_000)
     .run();
   await deleteDueOrganisations(env, now);
+  await applyDueSwitches(env, now);
+}
+
+/**
+ * Switches to Gratis whose date has passed but whose subscription.deleted webhook didn't arrive
+ * (or arrived before the keep list was stored): the members who weren't kept leave.
+ */
+export async function applyDueSwitches(env: Env, now = Date.now()) {
+  const { results } = await env.DB.prepare("SELECT org_id AS id, cancel_keep FROM subscriptions WHERE cancel_at IS NOT NULL AND cancel_at < ? AND plan = 'gratis' LIMIT 50")
+    .bind(now - 86_400_000)
+    .all<{ id: string; cancel_keep: string | null }>();
+  for (const row of results) await env.DB.batch(applySwitchStmts(env, row, now));
 }
 
 /** Organisations whose owners asked for deletion 30 days ago: cancel billing, drop files and rows. */
@@ -49,7 +62,7 @@ export async function deleteDueOrganisations(env: Env, now = Date.now()) {
       del('DELETE FROM attachments WHERE request_id IN (SELECT id FROM requests WHERE org_id = ?)'),
       del('DELETE FROM request_messages WHERE request_id IN (SELECT id FROM requests WHERE org_id = ?)'),
       del('DELETE FROM requests WHERE org_id = ?'),
-      ...['members', 'invitations', 'subscriptions', 'event_passes', 'invoices', 'payment_methods', 'billing_contacts', 'customer_notes'].map((t) =>
+      ...['members', 'invitations', 'subscriptions', 'passes', 'checkouts', 'invoices', 'payment_methods', 'billing_contacts', 'customer_notes'].map((t) =>
         del(`DELETE FROM ${t} WHERE org_id = ?`),
       ),
       del('DELETE FROM organisations WHERE id = ?'),
