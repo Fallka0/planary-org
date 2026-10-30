@@ -33,14 +33,14 @@ describe('membership', () => {
   it('tells Tournament which organisations an account belongs to, with the key only', async () => {
     expect((await get(`/internal/people/${NOA.id}/orgs`)).status).toBe(404);
     const r = await json(get(`/internal/people/${NOA.id}/orgs`, { internal: true }));
-    expect(r.orgs).toEqual([{ id: 'org_a', name: 'Verein Gurten LAN', initials: 'GL', role: 'member', plan: 'gratis', services: ['tournament'], wishlist: { maxLists: 3 } }]);
+    expect(r.orgs).toEqual([{ id: 'org_a', name: 'Verein Gurten LAN', initials: 'GL', role: 'member', plan: 'gratis', services: ['tournament'], kind: 'team', wishlist: { maxLists: 3 } }]);
     expect((await json(get('/internal/people/u_nobody/orgs', { internal: true }))).orgs).toEqual([]);
   });
 
   it('lists my organisations', async () => {
     const me = await json(get('/portal/me', { who: NOA }));
     expect(me.me).toMatchObject({ id: NOA.id, email: NOA.email });
-    expect(me.orgs).toEqual([{ id: 'org_a', name: 'Verein Gurten LAN', initials: 'GL', role: 'member', plan: 'gratis', services: ['tournament'] }]);
+    expect(me.orgs).toEqual([{ id: 'org_a', name: 'Verein Gurten LAN', initials: 'GL', role: 'member', plan: 'gratis', services: ['tournament'], kind: 'team' }]);
   });
 
   it('answers 404 for every route of an organisation I am not in', async () => {

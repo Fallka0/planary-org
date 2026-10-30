@@ -61,6 +61,7 @@ const TABLES = [
   'invoices',
   'payment_methods',
   'billing_contacts',
+  'product_subscriptions',
   'subscriptions',
   'organisations',
   'provider_events',

@@ -3,7 +3,8 @@
 
 import type { Billing, BillingState, CheckoutStatus, PassEntitlement, SubscriptionLine } from '../contract';
 import type { Env } from '../env';
-import { PASS, PLANS, planList } from '../plans';
+import { PASS, PLANS, planList, VAULT_PLANS, vaultPrice } from '../plans';
+import { vaultActive, vaultBillingOut, vaultSubOf, type VaultSubRow } from './vault';
 import {
   ACTIVE_STATES,
   cardExpiresBefore,
@@ -69,10 +70,13 @@ export function stateOf(org: OrgRow, invoices: Pick<InvoiceRow, 'status' | 'due_
   return org.plan === 'plus' ? 'active' : 'free';
 }
 
-/** Plus as the base line, and the passes of the last year as one-off lines. */
-export function linesOf(org: OrgRow, passes: PassRow[], now: number): SubscriptionLine[] {
+/** Plus as the base line, Vault as an add-on, and the passes of the last year as one-off lines. */
+export function linesOf(org: OrgRow, passes: PassRow[], now: number, vault: VaultSubRow | null = null): SubscriptionLine[] {
   const lines: SubscriptionLine[] = [];
   if (org.plan === 'plus') lines.push({ kind: 'base', name: PLANS.plus.name, period: 'year', amount: PLANS.plus.price, tournamentId: null });
+  if (vaultActive(vault)) {
+    lines.push({ kind: 'addon', name: VAULT_PLANS[vault.plan].name, period: vault.period, amount: vaultPrice(vault.plan, vault.period), tournamentId: null });
+  }
   for (const p of passes) {
     if (p.created_at < now - YEAR) continue;
     lines.push({ kind: 'once', name: `${PASS.name} · ${p.t_name ?? 'Turnier'}`, period: 'once', amount: p.amount, tournamentId: p.tournament_id });
@@ -95,7 +99,7 @@ export async function wishlistCount(env: Env, orgId: string) {
 
 export async function billingOf(env: Env, org: OrgRow, now: number): Promise<Billing> {
   const DB = env.DB;
-  const [invoices, pm, contact, passes, usage, running, organisers, wishlists] = await Promise.all([
+  const [invoices, pm, contact, passes, usage, running, organisers, wishlists, vault] = await Promise.all([
     invoicesOf(env, org.id),
     DB.prepare('SELECT * FROM payment_methods WHERE org_id = ?').bind(org.id).first<PaymentMethodRow>(),
     contactOf(env, org.id),
@@ -106,6 +110,7 @@ export async function billingOf(env: Env, org: OrgRow, now: number): Promise<Bil
     DB.prepare("SELECT COUNT(*) AS n FROM tournaments WHERE organisation_id = ? AND state = 'live'").bind(org.id).first<{ n: number }>(),
     DB.prepare('SELECT COUNT(*) AS n FROM members WHERE org_id = ?').bind(org.id).first<{ n: number }>(),
     wishlistCount(env, org.id),
+    vaultSubOf(env, org.id),
   ]);
   const visible = invoices.filter((i) => i.status !== 'draft');
   const overdue = oldestOverdue(visible, now);
@@ -115,7 +120,7 @@ export async function billingOf(env: Env, org: OrgRow, now: number): Promise<Bil
     pass: PASS,
     current: org.plan,
     state: stateOf(org, visible, pm, now),
-    lines: linesOf(org, passes, now),
+    lines: linesOf(org, passes, now, vault),
     passes: passes.map(passOut),
     invoices: visible.map((i) => invoiceOut(i, now)),
     paymentMethod: paymentMethodOut(pm),
@@ -126,6 +131,7 @@ export async function billingOf(env: Env, org: OrgRow, now: number): Promise<Bil
     graceUntil: overdue?.due_at ? graceUntil(overdue.due_at) : null,
     cancelAt: org.plan === 'plus' && org.cancel_at && org.cancel_at > now ? org.cancel_at : null,
     usage: { largestTournament: usage?.largest ?? 0, running: running?.n ?? 0, organisers: organisers?.n ?? 0, wishlists },
+    vault: vaultBillingOut(vault, org.vault_override, now),
   };
 }
 
@@ -159,6 +165,9 @@ export interface CheckoutRow {
   org_id: string;
   kind: 'plan' | 'pass';
   pay_by: 'card' | 'invoice';
+  product: 'vault' | null;
+  product_plan: 'plus' | 'pro' | null;
+  period: 'month' | 'year' | null;
   tournament_id: string | null;
   tournament_name: string | null;
   state: 'pending' | 'paid' | 'failed';
@@ -176,6 +185,9 @@ export const checkoutOut = (r: CheckoutRow): CheckoutStatus => ({
   id: r.id,
   orgId: r.org_id,
   kind: r.kind,
+  product: r.product ?? null,
+  productPlan: r.product_plan ?? null,
+  period: r.period ?? null,
   state: r.state,
   failure: r.failure,
   amount: r.pay_by === 'invoice' ? 0 : r.amount,

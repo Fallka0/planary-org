@@ -1,6 +1,6 @@
 // Organisations: effective plan, billing state, invoices, contacts, banners.
 
-import type { BillingContact, Invoice, InvoiceStatus, OrgService, PaymentMethod, PlanId, PortalBanner, SubscriptionLine, TournamentSummary } from '../contract';
+import type { BillingContact, Invoice, InvoiceStatus, OrgKind, OrgService, PaymentMethod, PlanId, VaultPlanId, PortalBanner, SubscriptionLine, TournamentSummary } from '../contract';
 import type { Env } from '../env';
 import { chf, DAY, longDate, parseJsonArray, shortDate, timeOfDay, zurichDay } from './util';
 
@@ -34,6 +34,9 @@ export interface OrgRow {
   logo_key: string | null;
   /** JSON array of OrgService. Read it with servicesOf(). */
   services: string;
+  kind: OrgKind;
+  /** Staff override of the Vault plan; null = follow billing. */
+  vault_override: VaultPlanId | null;
   plan_override: PlanId | null;
   created_at: number;
   delete_at: number | null;
@@ -49,13 +52,15 @@ export interface OrgRow {
   cancel_keep: string | null;
 }
 
-export const ORG_SELECT = `SELECT o.id, o.name, o.slug, o.logo_key, o.services, o.plan_override, o.created_at, o.delete_at,
+export const ORG_SELECT = `SELECT o.id, o.name, o.slug, o.logo_key, o.services, o.kind, o.vault_override, o.plan_override, o.created_at, o.delete_at,
   ${PLAN_SQL} AS plan, s.state AS sub_state, s.customer_id, s.subscription_id, s.current_period_end, s.plan AS sub_plan,
   s.collection_method, s.pay_by, s.cancel_at, s.cancel_keep
   FROM organisations o LEFT JOIN subscriptions s ON s.org_id = o.id`;
 
-/** The services an organisation uses, in a fixed order. Unknown or broken values read as Tournament. */
-export function servicesOf(org: Pick<OrgRow, 'services'>): OrgService[] {
+/** The services an organisation uses, in a fixed order. Unknown or broken values read as Tournament.
+ *  Personal accounts only pay for products, so they have none. */
+export function servicesOf(org: Pick<OrgRow, 'services'> & Partial<Pick<OrgRow, 'kind'>>): OrgService[] {
+  if (org.kind === 'personal') return [];
   let raw: unknown;
   try {
     raw = JSON.parse(org.services);
