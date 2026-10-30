@@ -13,6 +13,7 @@ export const AREAS: readonly Area[] = [
   'casino',
   'casino_moderation',
   'wishlist',
+  'vault',
   'audit',
   'staff',
 ];
@@ -30,6 +31,8 @@ export const MATRIX: Record<Area, { label: string; access: [Access, Access, Acce
   casino: { label: 'Casino (chips, games, economy)', access: ['edit', 'edit', 'none', 'none'] },
   casino_moderation: { label: 'Casino moderation', access: ['edit', 'edit', 'edit', 'read'] },
   wishlist: { label: 'Wishlist totals', access: ['read', 'read', 'read', 'read'] },
+  // Names and email addresses, so not for viewers.
+  vault: { label: 'Vault storage per person', access: ['read', 'read', 'read', 'none'] },
   audit: { label: 'Audit log', access: ['read', 'read', 'none', 'none'] },
   staff: { label: 'Staff and roles', access: ['edit', 'none', 'none', 'none'] },
 };

@@ -25,6 +25,7 @@ export default defineConfig(async () => {
             MAIL_FROM: 'Planary <info@planary.test>',
             STAFF_INBOX: 'staff@planary.test',
             WISHLIST_API: '',
+            VAULT_API: '',
             INTERNAL_KEY: 'test-internal-key',
             STRIPE_WEBHOOK_SECRET: 'whsec_test',
           },

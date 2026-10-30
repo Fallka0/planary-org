@@ -405,6 +405,33 @@ describe('overview, search and wishlist', () => {
   });
 });
 
+describe('vault', () => {
+  beforeEach(addAllStaff);
+
+  it('lists storage per person from Vault, for staff who may see it', async () => {
+    const off = await get('/console/vault', { who: SUPPORT });
+    expect(off.status).toBe(503);
+    expect((await json(off)).code).toBe('not_connected');
+    expect((await get('/console/vault', { who: VIEWER, env: { INTERNAL_KEY_VAULT: 'vault-key' } })).status).toBe(403);
+
+    const VAULT = {
+      fetch: async (req: Request) =>
+        new URL(req.url).pathname === '/internal/usage' && req.headers.get('x-internal-key') === 'vault-key'
+          ? Response.json({
+              people: [
+                { userId: 'u1', name: 'Lea', email: 'lea@planary.test', plan: 'free', used: 10, quota: 100, files: 1, createdAt: 1, lastSeen: null, secret: 'x' },
+                { userId: 'u2', name: 'Noa', email: 'noa@planary.test', plan: 'pro', used: 90, quota: 1000, files: 7, createdAt: 2, lastSeen: 5 },
+              ],
+            })
+          : new Response('', { status: 403 }),
+    } as unknown as Fetcher;
+    const usage = await json(get('/console/vault', { who: SUPPORT, env: { INTERNAL_KEY_VAULT: 'vault-key', VAULT } }));
+    expect(usage.people.map((p: { userId: string }) => p.userId)).toEqual(['u2', 'u1']);
+    expect(usage.people[1].secret).toBeUndefined();
+    expect(usage.totals).toEqual({ vaults: 2, used: 100, quota: 1100 });
+  });
+});
+
 describe('errors', () => {
   it('answers unknown routes with 404 JSON and a request id', async () => {
     const res = await get('/nope');
