@@ -145,7 +145,6 @@ export async function startCheckout(env: Env, org: OrgRow, person: PersonCtx, bo
     const session = await stripe<{ id: string; url: string }>(env, 'POST', '/checkout/sessions', {
       mode: 'subscription',
       customer,
-      payment_method_types: ['card'],
       line_items: [{ price: env.STRIPE_PRICE_PLUS, quantity: 1 }],
       metadata: { org: org.id, kind: 'plan', plan: 'plus', checkout: id },
       subscription_data: { metadata: { org: org.id, plan: 'plus', checkout: id } },
@@ -173,7 +172,6 @@ export async function startCheckout(env: Env, org: OrgRow, person: PersonCtx, bo
     mode: 'payment',
     customer,
     currency: 'chf',
-    payment_method_types: ['card'],
     line_items: [{ price: env.STRIPE_PRICE_PASS, quantity: 1 }],
     metadata: { org: org.id, kind: 'pass', tournament: t.id, checkout: id },
     payment_intent_data: { metadata: { org: org.id, tournament: t.id, checkout: id } },
@@ -243,7 +241,6 @@ async function startVaultCheckout(
   const session = await stripe<{ id: string; url: string }>(env, 'POST', '/checkout/sessions', {
     mode: 'subscription',
     customer,
-    payment_method_types: ['card'],
     line_items: [{ price, quantity: 1 }],
     metadata: { ...metadata, kind: 'plan' },
     subscription_data: { metadata },
