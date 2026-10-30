@@ -213,7 +213,8 @@ describe('checkout', () => {
     expect(r.url).toBe('https://checkout.stripe.test/cs_1');
     const s = sessionBody(stripe.calls);
     expect(s.get('mode')).toBe('subscription');
-    expect(s.getAll('payment_method_types[]')).toEqual(['card']);
+    // Payment methods come from the Stripe dashboard; newer API versions refuse payment_method_types.
+    expect(s.has('payment_method_types[]')).toBe(false);
     expect(s.get('line_items[0][price]')).toBe('price_plus');
     expect(s.get('customer')).toBe('cus_new');
     expect(s.get('metadata[checkout]')).toBe(r.checkoutId);
@@ -254,7 +255,8 @@ describe('checkout', () => {
     expect(r.url).toBe('https://checkout.stripe.test/cs_1');
     const s = sessionBody(stripe.calls);
     expect(s.get('mode')).toBe('payment');
-    expect(s.getAll('payment_method_types[]')).toEqual(['card']);
+    // Payment methods come from the Stripe dashboard; newer API versions refuse payment_method_types.
+    expect(s.has('payment_method_types[]')).toBe(false);
     expect(s.get('currency')).toBe('chf');
     expect(s.get('line_items[0][price]')).toBe('price_pass');
     expect(s.get('metadata[tournament]')).toBe('t_1');

@@ -40,6 +40,7 @@ Sign-in goes through the `AUTH` service binding to planary-auth. Locally there i
    - `GITHUB_TOKEN`: read-only, for the deploys shown on the status page.
 4. **Stripe** (start in test mode):
    - Create two products in CHF: **Plus** with a yearly price of 149.00, and **Turnier-Pass** with a one-off price of 29.00. Their price ids go into `STRIPE_PRICE_PLUS` and `STRIPE_PRICE_PASS`. For Vault, two more products: **Vault Plus** (4.00 monthly and 40.00 yearly) and **Vault Pro** (10.00 monthly and 100.00 yearly); their four price ids go into the `STRIPE_PRICE_VAULT_*` secrets. Add `customer.subscription.*` for them to the webhook's events if it lists events one by one.
+   - Payment methods are switched on in the Stripe dashboard (Settings → Payment methods: cards, and TWINT for one-off payments); checkout sessions don't name them.
    - Add a webhook to `https://org.planary.ch/webhooks/stripe` with `checkout.session.completed`, `checkout.session.expired`, `payment_intent.payment_failed`, `customer.subscription.*`, `invoice.*`, `payment_method.attached` and `customer.updated`.
    - Turn on card payments. Plus also goes by invoice (QR-bill by e-mail, 30 days): turn on invoices and the Swiss QR-bill in the invoice settings. TWINT is left room for and not offered yet.
    - Enable the customer portal (change the payment method). Cancelling happens in the Planary portal, not at Stripe.
