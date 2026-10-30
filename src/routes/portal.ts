@@ -55,7 +55,7 @@ portalApp.get('/me', async (c) => {
   const { results } = await c.env.DB.prepare(`SELECT x.*, m.role AS member_role FROM (${ORG_SELECT}) x JOIN members m ON m.org_id = x.id WHERE m.user_id = ? ORDER BY x.name`)
     .bind(person.id)
     .all<OrgRow & { member_role: MemberRole }>();
-  const orgs: PortalOrgSummary[] = results.map((o) => ({ id: o.id, name: o.name, initials: initials(o.name), role: o.member_role, plan: o.plan, services: servicesOf(o) }));
+  const orgs: PortalOrgSummary[] = results.map((o) => ({ id: o.id, name: o.name, initials: initials(o.name), role: o.member_role, plan: o.plan, services: servicesOf(o), kind: o.kind }));
   return c.json({ me: { id: person.id, name: person.name, email: person.email }, orgs });
 });
 

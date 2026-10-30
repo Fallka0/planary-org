@@ -1,13 +1,14 @@
 // /internal/*: other Planary workers (x-internal-key, constant-time). 404 without the key.
 
 import { Hono } from 'hono';
-import type { LimitsResponse, MemberRole, PlanId, ServiceId, TournamentState } from '../contract';
+import type { EntitlementsResponse, LimitsResponse, MemberRole, PlanId, ServiceId, TournamentState, VaultPlanId } from '../contract';
 import type { AppEnv, Env } from '../env';
 import { internalKeyOk } from '../lib/auth';
 import { pastGrace } from '../lib/billing';
 import { getOrg, graceUntil, ORG_SELECT, servicesOf, tournamentBanners, type OrgRow } from '../lib/orgs';
 import { bad, clean, errorBody, initials, int, MINUTE, notFound, readJson, requireOneOf, requireText } from '../lib/util';
-import { PASS, PLANS, planOf } from '../plans';
+import { PASS, PLANS, planOf, vaultRank } from '../plans';
+import { vaultActive, type VaultSubRow } from '../lib/vault';
 import { SERVICE_IDS } from '../services';
 
 export const internalApp = new Hono<AppEnv>();
@@ -67,6 +68,48 @@ internalApp.get('/limits', async (c) => {
   return respond('gratis', org ? 'organisation' : 'person', runningNow);
 });
 
+/**
+ * What one person may use in each product (ADR 0003). Vault: the best plan among their personal
+ * account and the organisations they own; a staff override counts as given. Past the grace date of an
+ * overdue invoice an account gives Vault Free (source 'overdue'), nothing is deleted.
+ */
+internalApp.get('/entitlements', async (c) => {
+  const user = id(c.req.query('user'), 'user');
+  const now = Date.now();
+  const { results } = await c.env.DB.prepare(
+    `SELECT o.id, o.kind, o.vault_override, p.plan, p.period, p.state, p.cancel_at, p.current_period_end, p.subscription_id, p.pay_by,
+       p.pending_plan, p.pending_period, p.schedule_id, p.org_id
+     FROM organisations o JOIN members m ON m.org_id = o.id AND m.user_id = ? AND m.role = 'owner'
+     LEFT JOIN product_subscriptions p ON p.org_id = o.id AND p.product = 'vault'
+     WHERE o.delete_at IS NULL`,
+  )
+    .bind(user)
+    .all<{ id: string; kind: string; vault_override: VaultPlanId | null } & Partial<VaultSubRow>>();
+
+  type Vault = EntitlementsResponse['vault'];
+  let best: Vault | null = null;
+  let overdue: Vault | null = null;
+  const consider = (v: Vault, personal: boolean) => {
+    // Higher plan wins; on a tie, the personal account.
+    if (!best || vaultRank(v.plan) > vaultRank(best.plan) || (vaultRank(v.plan) === vaultRank(best.plan) && personal)) best = v;
+  };
+  for (const row of results) {
+    const personal = row.kind === 'personal';
+    if (row.vault_override) {
+      consider({ plan: row.vault_override, source: 'override', until: null, orgId: row.id }, personal);
+      continue;
+    }
+    if (!row.state || !vaultActive({ state: row.state }) || !row.plan) continue;
+    if (await pastGrace(c.env, row.id, now)) {
+      overdue ??= { plan: 'free', source: 'overdue', until: null, orgId: row.id };
+      continue;
+    }
+    consider({ plan: row.plan, source: 'subscription', until: row.cancel_at && row.cancel_at > now ? row.cancel_at : null, orgId: row.id }, personal);
+  }
+  const vault: Vault = best ?? overdue ?? { plan: 'free', source: 'default', until: null, orgId: null };
+  return c.json({ vault } satisfies EntitlementsResponse);
+});
+
 internalApp.get('/orgs/:id/membership', async (c) => {
   const user = id(c.req.query('user'), 'user');
   const m = await c.env.DB.prepare('SELECT m.role FROM members m JOIN organisations o ON o.id = m.org_id WHERE m.org_id = ? AND m.user_id = ? AND o.delete_at IS NULL')
@@ -82,7 +125,7 @@ internalApp.get('/people/:id/orgs', async (c) => {
     .bind(user)
     .all<OrgRow & { member_role: MemberRole }>();
   return c.json({
-    orgs: results.map((o) => ({ id: o.id, name: o.name, initials: initials(o.name), role: o.member_role, plan: o.plan, services: servicesOf(o), wishlist: PLANS[o.plan].wishlist })),
+    orgs: results.map((o) => ({ id: o.id, name: o.name, initials: initials(o.name), role: o.member_role, plan: o.plan, services: servicesOf(o), kind: o.kind, wishlist: PLANS[o.plan].wishlist })),
   });
 });
 

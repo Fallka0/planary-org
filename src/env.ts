@@ -35,6 +35,11 @@ export interface Env {
   STRIPE_PRICE_PLUS?: string;
   /** Stripe price of the Turnier-Pass (CHF 29, one-off). */
   STRIPE_PRICE_PASS?: string;
+  /** Stripe prices of Vault Plus (CHF 4 a month, 40 a year) and Vault Pro (CHF 10 a month, 100 a year). */
+  STRIPE_PRICE_VAULT_PLUS_MONTH?: string;
+  STRIPE_PRICE_VAULT_PLUS_YEAR?: string;
+  STRIPE_PRICE_VAULT_PRO_MONTH?: string;
+  STRIPE_PRICE_VAULT_PRO_YEAR?: string;
   RESEND_API_KEY?: string;
   GITHUB_TOKEN?: string;
 }

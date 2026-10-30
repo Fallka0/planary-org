@@ -190,7 +190,7 @@ describe('audit log', () => {
     }
     const rows = await auditRows();
     expect(rows[0]).toMatchObject({ action: 'incident.open', target: 'INC-0001', area: 'incidents' });
-    expect(rows.find((r) => r.action === 'customer.plan')).toMatchObject({ target: 'Verein Gurten LAN', details: 'Gratis → Plus: Comp for the LAN' });
+    expect(rows.find((r) => r.action === 'customer.plan')).toMatchObject({ target: 'Verein Gurten LAN', details: 'Planary Gratis → Planary Plus: Comp for the LAN' });
     expect(rows.find((r) => r.action === 'invoice.reminder')).toMatchObject({ target: 'Invoice 2026-0142', details: 'Verein Gurten LAN, 1st reminder' });
     expect(rows.find((r) => r.action === 'request.reply')).toMatchObject({ target: 'REQ-1184', details: 'set to waiting' });
     expect(rows.find((r) => r.action === 'staff.role')).toMatchObject({ target: 'Tim Roth', details: 'viewer → support' });

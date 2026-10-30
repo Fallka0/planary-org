@@ -34,11 +34,11 @@ Sign-in goes through the `AUTH` service binding to planary-auth. Locally there i
    - Check `CONSOLE_ORIGINS` and `PORTAL_ORIGINS` (allowed browser origins), `PORTAL_URL`, `CONSOLE_URL`, `MAIL_FROM` and `STAFF_INBOX`.
 3. **Secrets** (`wrangler secret put NAME`). Each one is optional: without it, its integration switches off and the related screens say so.
    - `INTERNAL_KEY`: a long random string, shared with the Tournament API, planary-auth and planary-stats.
-   - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PLUS` (Plus: CHF 149, recurring yearly) and `STRIPE_PRICE_PASS` (Turnier-Pass: CHF 29, one-off).
+   - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PLUS` (Plus: CHF 149, recurring yearly) and `STRIPE_PRICE_PASS` (Turnier-Pass: CHF 29, one-off). Vault (ADR 0003): `STRIPE_PRICE_VAULT_PLUS_MONTH`, `STRIPE_PRICE_VAULT_PLUS_YEAR`, `STRIPE_PRICE_VAULT_PRO_MONTH`, `STRIPE_PRICE_VAULT_PRO_YEAR`.
    - `RESEND_API_KEY`: e-mails (invitations, support replies, staff notices). `planary.ch` must be verified in Resend.
    - `GITHUB_TOKEN`: read-only, for the deploys shown on the status page.
 4. **Stripe** (start in test mode):
-   - Create two products in CHF: **Plus** with a yearly price of 149.00, and **Turnier-Pass** with a one-off price of 29.00. Their price ids go into `STRIPE_PRICE_PLUS` and `STRIPE_PRICE_PASS`.
+   - Create two products in CHF: **Plus** with a yearly price of 149.00, and **Turnier-Pass** with a one-off price of 29.00. Their price ids go into `STRIPE_PRICE_PLUS` and `STRIPE_PRICE_PASS`. For Vault, two more products: **Vault Plus** (4.00 monthly and 40.00 yearly) and **Vault Pro** (10.00 monthly and 100.00 yearly); their four price ids go into the `STRIPE_PRICE_VAULT_*` secrets. Add `customer.subscription.*` for them to the webhook's events if it lists events one by one.
    - Add a webhook to `https://org.planary.ch/webhooks/stripe` with `checkout.session.completed`, `checkout.session.expired`, `payment_intent.payment_failed`, `customer.subscription.*`, `invoice.*`, `payment_method.attached` and `customer.updated`.
    - Turn on card payments. Plus also goes by invoice (QR-bill by e-mail, 30 days): turn on invoices and the Swiss QR-bill in the invoice settings. TWINT is left room for and not offered yet.
    - Enable the customer portal (change the payment method). Cancelling happens in the Planary portal, not at Stripe.

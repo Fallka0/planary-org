@@ -140,7 +140,7 @@ describe('billing state from events', () => {
     billing = await json(get('/portal/orgs/org_a/billing', { who: MATTEO }));
     expect(billing.invoices[0]).toMatchObject({ status: 'paid', paidWith: 'card' });
     expect(billing).toMatchObject({ current: 'plus', state: 'card_expires', payBy: 'card', graceUntil: null, reminderAt: periodEnd * 1000 - 30 * DAY });
-    expect(billing.lines).toEqual([{ kind: 'base', name: 'Plus', period: 'year', amount: 14900, tournamentId: null }]);
+    expect(billing.lines).toEqual([{ kind: 'base', name: 'Planary Plus', period: 'year', amount: 14900, tournamentId: null }]);
     expect(billing.paymentMethod).toMatchObject({ brand: 'visa', last4: '4242' });
     expect(org.billingState).toBe('overdue');
     expect((await json(get('/portal/orgs/org_a', { who: MATTEO }))).billingState).toBe('card_expires');

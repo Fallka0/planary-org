@@ -9,6 +9,7 @@ import type { AppEnv, Env } from '../env';
 import { auditStmt } from '../lib/audit';
 import { stripe, stripeConfigured, verifyStripeSignature } from '../lib/stripe';
 import { errorBody, randomId } from '../lib/util';
+import { vaultPlanOfPrice } from '../lib/vault';
 
 export const webhooksApp = new Hono<AppEnv>();
 
@@ -114,6 +115,21 @@ async function effectsOf(env: Env, event: StripeEvent): Promise<D1PreparedStatem
       );
     }
     const sub = idOf(obj.subscription);
+    if (obj.mode === 'subscription' && sub && obj.metadata?.product === 'vault') {
+      // Vault's own subscription; Planary Plus stays as it is. The subscription events fill in the rest.
+      const plan = str(obj.metadata?.plan);
+      const period = str(obj.metadata?.period);
+      if (plan && period) {
+        out.push(
+          DB.prepare(
+            `INSERT INTO product_subscriptions (org_id, product, plan, period, state, subscription_id, pay_by, updated_at) VALUES (?, 'vault', ?, ?, 'active', ?, 'card', ?)
+             ON CONFLICT (org_id, product) DO UPDATE SET subscription_id = excluded.subscription_id, pay_by = 'card', updated_at = excluded.updated_at`,
+          ).bind(orgId, plan, period, sub, now),
+        );
+      }
+      out.push(...markCheckout('paid'));
+      return out;
+    }
     if (obj.mode === 'subscription' && sub) {
       out.push(
         DB.prepare("UPDATE subscriptions SET subscription_id = ?, pay_by = 'card', collection_method = 'charge_automatically', updated_at = ? WHERE org_id = ?").bind(sub, now, orgId),
@@ -132,6 +148,7 @@ async function effectsOf(env: Env, event: StripeEvent): Promise<D1PreparedStatem
   if (type.startsWith('customer.subscription.')) {
     const orgId = await orgFor(env, obj, customer);
     if (!orgId) return [];
+    if (await isVaultSubscription(env, obj)) return vaultSubscriptionEffects(env, type, obj, orgId, customer, now);
     const status = type === 'customer.subscription.deleted' ? 'canceled' : (str(obj.status) ?? 'incomplete');
     const plan = ACTIVE.includes(status) ? 'plus' : 'gratis';
     const periodEnd = ms(obj.current_period_end) ?? ms(obj.items?.data?.[0]?.current_period_end);
@@ -170,7 +187,7 @@ async function effectsOf(env: Env, event: StripeEvent): Promise<D1PreparedStatem
     const status: InvoiceStatus = raw && ['draft', 'open', 'paid', 'void', 'uncollectible'].includes(raw) ? (raw as InvoiceStatus) : 'open';
     const description = str(obj.lines?.data?.[0]?.description) ?? str(obj.description) ?? '';
     const amount = typeof obj.total === 'number' ? obj.total : typeof obj.amount_due === 'number' ? obj.amount_due : 0;
-    const lines = invoiceLines(obj);
+    const lines = invoiceLines(env, obj);
     const paidWith = status === 'paid' ? (str(obj.collection_method) === 'send_invoice' ? 'invoice' : 'card') : null;
     const tournament = str(obj.metadata?.tournament);
     const extra: D1PreparedStatement[] = [];
@@ -232,17 +249,18 @@ async function effectsOf(env: Env, event: StripeEvent): Promise<D1PreparedStatem
   return [];
 }
 
-/** Stripe invoice lines as SubscriptionLines: passes are one-off, the subscription item is the base plan. */
-function invoiceLines(obj: Obj): SubscriptionLine[] {
+/** Stripe invoice lines as SubscriptionLines: passes are one-off, Vault is an add-on, the other subscription item is the base plan. */
+function invoiceLines(env: Env, obj: Obj): SubscriptionLine[] {
   const data: Obj[] = Array.isArray(obj.lines?.data) ? obj.lines.data : [];
   return data.slice(0, 20).map((l) => {
     const tournament = str(l.metadata?.tournament) ?? str(obj.metadata?.tournament);
     const recurring = Boolean(l.price?.recurring) || l.type === 'subscription' || l.parent?.type === 'subscription_item_details';
-    const kind: SubscriptionLine['kind'] = tournament ? 'once' : recurring ? (data.indexOf(l) === 0 ? 'base' : 'addon') : 'once';
+    const vault = vaultPlanOfPrice(env, idOf(l.price) ?? idOf(l.pricing?.price_details?.price));
+    const kind: SubscriptionLine['kind'] = tournament ? 'once' : vault ? 'addon' : recurring ? (data.indexOf(l) === 0 ? 'base' : 'addon') : 'once';
     return {
       kind,
       name: (str(l.description) ?? '').slice(0, 200),
-      period: kind === 'once' ? 'once' : 'year',
+      period: kind === 'once' ? 'once' : (vault?.period ?? (l.price?.recurring?.interval === 'month' ? 'month' : 'year')),
       amount: typeof l.amount === 'number' ? l.amount : 0,
       tournamentId: tournament,
     };
@@ -255,4 +273,49 @@ function cardStmt(env: Env, orgId: string, providerId: string | null, card: Obj,
      ON CONFLICT (org_id) DO UPDATE SET provider_id = excluded.provider_id, kind = 'card', brand = excluded.brand, last4 = excluded.last4,
        exp_month = excluded.exp_month, exp_year = excluded.exp_year, updated_at = excluded.updated_at`,
   ).bind(orgId, providerId, String(card.brand ?? '').slice(0, 30), String(card.last4 ?? '').slice(0, 4), Number(card.exp_month) || 0, Number(card.exp_year) || 0, now);
+}
+
+/** A Vault subscription: marked in its metadata, priced with a Vault price, or one we already store. */
+async function isVaultSubscription(env: Env, obj: Obj) {
+  if (obj.metadata?.product === 'vault') return true;
+  if (vaultPlanOfPrice(env, idOf(obj.items?.data?.[0]?.price))) return true;
+  const id = str(obj.id);
+  return Boolean(id && (await env.DB.prepare('SELECT 1 FROM product_subscriptions WHERE subscription_id = ?').bind(id).first()));
+}
+
+/**
+ * Vault's subscription row from a customer.subscription.* event. The price says the plan and period
+ * (a scheduled downgrade arrives as a price change); a pending change it matches is done. Events for
+ * an older subscription never overwrite a newer one that is running.
+ */
+function vaultSubscriptionEffects(env: Env, type: string, obj: Obj, orgId: string, customer: string | null, now: number): D1PreparedStatement[] {
+  const DB = env.DB;
+  const fromPrice = vaultPlanOfPrice(env, idOf(obj.items?.data?.[0]?.price));
+  const plan = fromPrice?.plan ?? str(obj.metadata?.plan);
+  const period = fromPrice?.period ?? str(obj.metadata?.period);
+  if ((plan !== 'plus' && plan !== 'pro') || (period !== 'month' && period !== 'year')) return [];
+  const deleted = type === 'customer.subscription.deleted';
+  const status = deleted ? 'canceled' : (str(obj.status) ?? 'incomplete');
+  const periodEnd = ms(obj.current_period_end) ?? ms(obj.items?.data?.[0]?.current_period_end);
+  const method = str(obj.collection_method);
+  const payBy = method === 'send_invoice' ? 'invoice' : method === 'charge_automatically' ? 'card' : null;
+  const cancelAt = !deleted && obj.cancel_at_period_end === true ? (ms(obj.cancel_at) ?? periodEnd) : null;
+  const out: D1PreparedStatement[] = [
+    DB.prepare(
+      `INSERT INTO product_subscriptions (org_id, product, plan, period, state, subscription_id, pay_by, current_period_end, cancel_at, updated_at)
+       VALUES (?1, 'vault', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+       ON CONFLICT (org_id, product) DO UPDATE SET plan = excluded.plan, period = excluded.period, state = excluded.state,
+         subscription_id = excluded.subscription_id, pay_by = COALESCE(excluded.pay_by, product_subscriptions.pay_by),
+         current_period_end = COALESCE(excluded.current_period_end, product_subscriptions.current_period_end), cancel_at = excluded.cancel_at,
+         pending_plan = CASE WHEN excluded.state = 'canceled' OR (product_subscriptions.pending_plan = excluded.plan AND product_subscriptions.pending_period = excluded.period) THEN NULL ELSE product_subscriptions.pending_plan END,
+         pending_period = CASE WHEN excluded.state = 'canceled' OR (product_subscriptions.pending_plan = excluded.plan AND product_subscriptions.pending_period = excluded.period) THEN NULL ELSE product_subscriptions.pending_period END,
+         schedule_id = CASE WHEN excluded.state = 'canceled' OR (product_subscriptions.pending_plan = excluded.plan AND product_subscriptions.pending_period = excluded.period) THEN NULL ELSE product_subscriptions.schedule_id END,
+         updated_at = excluded.updated_at
+       WHERE product_subscriptions.subscription_id IS NULL OR product_subscriptions.subscription_id = excluded.subscription_id
+         OR product_subscriptions.state NOT IN ('active', 'past_due', 'trialing')`,
+    ).bind(orgId, plan, period, status, str(obj.id), payBy, periodEnd, cancelAt, now),
+    auditStmt(env, { area: 'system', actor: null, action: 'billing.vault_subscription', sentence: 'Vault subscription changed at Stripe', targetSql: orgName(orgId), details: `${status}, ${plan} ${period}`, at: now }),
+  ];
+  if (customer) out.push(linkCustomer(env, orgId, customer, now));
+  return out;
 }

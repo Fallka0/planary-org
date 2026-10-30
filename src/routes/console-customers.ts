@@ -26,7 +26,7 @@ import { REQUEST_SELECT, requestSummary, type RequestRow } from '../lib/requests
 import { THIS_YEAR_SQL, thisYear, TOURNAMENT_ORDER, TOURNAMENT_SELECT, tournamentOut, type TournamentRow } from '../lib/tournaments';
 import { ApiError, chf, clean, DAY, initials, notFound, oneOf, randomId, readJson, requireOneOf, requireText } from '../lib/util';
 import { can } from '../permissions';
-import { PLAN_IDS, planName, PLANS } from '../plans';
+import { PLAN_IDS, planName, PLANS, VAULT_PLAN_IDS, VAULT_PLANS } from '../plans';
 import { actorOf, need } from './guard';
 
 async function customerRows(env: Env, now: number): Promise<CustomerRow[]> {
@@ -245,9 +245,26 @@ export function registerCustomers(app: Hono<AppEnv>) {
     const org = await getOrg(c.env, c.req.param('id'));
     if (!org) throw notFound('No organisation with that id.');
     const body = await readJson(c);
+    const me = c.get('staff');
+    if (body.product !== undefined) {
+      requireOneOf(body.product, ['vault'] as const, 'product');
+      const vaultPlan = requireOneOf(body.plan, VAULT_PLAN_IDS, 'plan');
+      const why = requireText(body.reason, 'reason', 500);
+      await c.env.DB.batch([
+        c.env.DB.prepare('UPDATE organisations SET vault_override = ?, vault_override_reason = ? WHERE id = ?').bind(vaultPlan, why, org.id),
+        auditStmt(c.env, {
+          area: 'customers',
+          actor: actorOf(me),
+          action: 'customer.plan',
+          sentence: 'Changed a plan',
+          target: org.name,
+          details: `${org.vault_override ? VAULT_PLANS[org.vault_override].name : 'Vault (billing)'} → ${VAULT_PLANS[vaultPlan].name}: ${why}`,
+        }),
+      ]);
+      return c.json({ ok: true });
+    }
     const plan: PlanId = requireOneOf(body.plan, PLAN_IDS, 'plan');
     const reason = requireText(body.reason, 'reason', 500);
-    const me = c.get('staff');
     await c.env.DB.batch([
       c.env.DB.prepare('UPDATE organisations SET plan_override = ?, plan_override_reason = ? WHERE id = ?').bind(plan, reason, org.id),
       auditStmt(c.env, {
