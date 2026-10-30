@@ -50,8 +50,17 @@ const backUrl = (env: Env, orgId: string, body: ParsedCheckout) =>
   body.kind === 'plan'
     ? `${portal(env)}/kasse?plan=plus&org=${encodeURIComponent(orgId)}`
     : body.kind === 'vault'
-      ? (body.returnTo ?? `${portal(env)}/abrechnung?org=${encodeURIComponent(orgId)}`)
+      ? body.returnTo
+        ? withQuery(body.returnTo, 'checkout', 'cancelled')
+        : `${portal(env)}/abrechnung?org=${encodeURIComponent(orgId)}`
       : `${portal(env)}/kasse?pass=tournament&tournament=${encodeURIComponent(body.tournamentId)}&org=${encodeURIComponent(orgId)}`;
+
+/** The app's own return address, telling it how the checkout ended. */
+const withQuery = (url: string, key: string, value: string) => {
+  const u = new URL(url);
+  u.searchParams.set(key, value);
+  return u.toString();
+};
 
 type ParsedCheckout =
   | { kind: 'plan'; payBy: PayBy; returnTo: string | null }

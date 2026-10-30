@@ -97,7 +97,8 @@ describe('checkout', () => {
     expect(s.get('metadata[product]')).toBe('vault');
     expect(s.get('subscription_data[metadata][plan]')).toBe('plus');
     expect(s.get('subscription_data[metadata][period]')).toBe('month');
-    expect(s.get('cancel_url')).toBe(VAULT);
+    // Cancelling at Stripe goes back to Vault, which says nothing was charged.
+    expect(s.get('cancel_url')).toBe(`${VAULT}?checkout=cancelled`);
 
     const me = await json(get('/portal/me', { who: NOA }));
     expect(me.orgs).toEqual([expect.objectContaining({ id: r.orgId, name: 'Noa Brunner', role: 'owner', kind: 'personal', services: [] })]);
