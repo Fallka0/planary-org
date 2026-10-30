@@ -472,6 +472,8 @@ export interface PortalOrg {
   role: MemberRole;
   plan: Plan;
   services: OrgService[];
+  /** 'personal': a person's own billing account (Vault); the portal shows Abrechnung and Support only. */
+  kind: OrgKind;
   /** Plus: next renewal. */
   renewsAt: number | null;
   billingState: BillingState;

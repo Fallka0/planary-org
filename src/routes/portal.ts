@@ -150,6 +150,7 @@ portalApp.get('/orgs/:id', async (c) => {
     role,
     plan: PLANS[org.plan],
     services: servicesOf(org),
+    kind: org.kind,
     renewsAt: isOwner ? renewsAt(org) : null,
     // Members don't see billing: for them it reads as Plus or Gratis only.
     billingState: isOwner ? stateOf(org, invoices?.results ?? [], pm ?? null, now) : org.plan === 'plus' ? 'active' : 'free',
