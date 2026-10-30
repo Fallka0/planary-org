@@ -12,6 +12,8 @@ export interface Env {
   WISHLIST?: Fetcher;
   /** Public address of Wishlist, for links in the portal. Default https://wishlist.planary.ch */
   WISHLIST_URL?: string;
+  /** planary-vault-api: /internal/usage (the Console's storage per person), with INTERNAL_KEY_VAULT. Optional. */
+  VAULT?: Fetcher;
   /** planary-tournament-api, not built yet. Nothing depends on it. */
   TOURNAMENT?: Fetcher;
 
@@ -24,12 +26,14 @@ export interface Env {
   STAFF_INBOX: string;
   /** Base URL of the Wishlist API; empty until it has /internal/totals. */
   WISHLIST_API?: string;
+  /** Base URL of the Vault API, for local runs without the VAULT binding. */
+  VAULT_API?: string;
   /** JSON array overriding the health-checked services (see src/services.ts). */
   SERVICES_JSON?: string;
 
   // Secrets
   INTERNAL_KEY?: string;
-  /** Vault's own key for /internal (entitlements), separate from the shared INTERNAL_KEY. */
+  /** Vault's own key, both ways: Vault calls /internal (entitlements) with it, and the Console reads Vault's /internal/usage with it. */
   INTERNAL_KEY_VAULT?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
