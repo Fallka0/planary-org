@@ -29,6 +29,8 @@ export interface Env {
 
   // Secrets
   INTERNAL_KEY?: string;
+  /** Vault's own key for /internal (entitlements), separate from the shared INTERNAL_KEY. */
+  INTERNAL_KEY_VAULT?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   /** Stripe price of Plus (CHF 149, yearly). */

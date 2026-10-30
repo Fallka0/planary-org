@@ -262,8 +262,11 @@ describe('changing and cancelling', () => {
 });
 
 describe('entitlements', () => {
-  it('answers 404 without the internal key', async () => {
+  it("answers 404 without the internal key, and takes Vault's own key", async () => {
     expect((await get('/internal/entitlements?user=u_noa')).status).toBe(404);
+    const own = { headers: { 'x-internal-key': 'vault-only-key' }, env: { INTERNAL_KEY_VAULT: 'vault-only-key' } };
+    expect((await get('/internal/entitlements?user=u_noa', own)).status).toBe(200);
+    expect((await get('/internal/entitlements?user=u_noa', { headers: { 'x-internal-key': 'vault-only-key' } })).status).toBe(404);
   });
 
   it('takes the best plan of the accounts a person owns, and a staff override', async () => {
