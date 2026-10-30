@@ -34,6 +34,7 @@ Sign-in goes through the `AUTH` service binding to planary-auth. Locally there i
    - Check `CONSOLE_ORIGINS` and `PORTAL_ORIGINS` (allowed browser origins), `PORTAL_URL`, `CONSOLE_URL`, `MAIL_FROM` and `STAFF_INBOX`.
 3. **Secrets** (`wrangler secret put NAME`). Each one is optional: without it, its integration switches off and the related screens say so.
    - `INTERNAL_KEY`: a long random string, shared with the Tournament API, planary-auth and planary-stats.
+   - `INTERNAL_KEY_VAULT`: Vault's own key for `/internal/entitlements` (Vault's `INTERNAL_KEY` secret holds the same value).
    - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PLUS` (Plus: CHF 149, recurring yearly) and `STRIPE_PRICE_PASS` (Turnier-Pass: CHF 29, one-off). Vault (ADR 0003): `STRIPE_PRICE_VAULT_PLUS_MONTH`, `STRIPE_PRICE_VAULT_PLUS_YEAR`, `STRIPE_PRICE_VAULT_PRO_MONTH`, `STRIPE_PRICE_VAULT_PRO_YEAR`.
    - `RESEND_API_KEY`: e-mails (invitations, support replies, staff notices). `planary.ch` must be verified in Resend.
    - `GITHUB_TOKEN`: read-only, for the deploys shown on the status page.

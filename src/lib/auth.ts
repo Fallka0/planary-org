@@ -30,7 +30,7 @@ export async function requirePerson(c: Context<AppEnv>): Promise<PersonCtx> {
 
 /** x-internal-key, compared in constant time. */
 export function internalKeyOk(env: Env, given: string | undefined) {
-  const expected = env.INTERNAL_KEY;
-  if (!expected || !given) return false;
-  return safeEqual(given, expected);
+  if (!given) return false;
+  // The shared key, or a caller's own key (Vault has one, so it can be revoked without touching the others).
+  return [env.INTERNAL_KEY, env.INTERNAL_KEY_VAULT].some((expected) => Boolean(expected) && safeEqual(given, expected as string));
 }
