@@ -14,6 +14,8 @@ export const AREAS: readonly Area[] = [
   'casino_moderation',
   'wishlist',
   'vault',
+  'people',
+  'people_ban',
   'audit',
   'staff',
 ];
@@ -33,6 +35,10 @@ export const MATRIX: Record<Area, { label: string; access: [Access, Access, Acce
   wishlist: { label: 'Wishlist totals', access: ['read', 'read', 'read', 'read'] },
   // Names and email addresses, so not for viewers.
   vault: { label: 'Vault storage per person', access: ['read', 'read', 'read', 'none'] },
+  // Every Planary account with name and email; suspending and restricting, but not banning.
+  people: { label: 'People: suspend and restrict', access: ['edit', 'edit', 'read', 'none'] },
+  // Permanent and deletes the person's Vault.
+  people_ban: { label: 'People: permanent ban', access: ['edit', 'none', 'none', 'none'] },
   audit: { label: 'Audit log', access: ['read', 'read', 'none', 'none'] },
   staff: { label: 'Staff and roles', access: ['edit', 'none', 'none', 'none'] },
 };
