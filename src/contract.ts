@@ -38,6 +38,7 @@ export type Area =
   | 'casino'
   | 'casino_moderation'
   | 'wishlist'
+  | 'vault'
   | 'audit'
   | 'staff';
 export type ServiceId = 'auth' | 'tournament' | 'casino' | 'wishlist' | 'web';
@@ -416,6 +417,25 @@ export interface WishlistTotals {
   shops: [domain: string, share: number][];
 }
 
+/** One person's Planary Vault. Bytes are ciphertext, as the quota counts them. */
+export interface VaultPerson {
+  userId: string;
+  name: string;
+  email: string;
+  plan: VaultPlanId;
+  used: number;
+  quota: number;
+  files: number;
+  createdAt: number;
+  lastSeen: number | null;
+}
+
+/** Storage per person in Planary Vault, largest first. */
+export interface VaultUsage {
+  people: VaultPerson[];
+  totals: { vaults: number; used: number; quota: number };
+}
+
 /** /console endpoints. `Q` query, `B` body, `R` response. */
 export interface ConsoleApi {
   'GET /console/me': { R: ConsoleMe };
@@ -440,6 +460,7 @@ export interface ConsoleApi {
   'GET /console/tournaments': { Q: { state?: TournamentState; plan?: PlanId }; R: { tournaments: TournamentSummary[] } };
   'GET /console/organisers': { R: { organisers: OrganiserRow[] } };
   'GET /console/wishlist': { R: WishlistTotals };
+  'GET /console/vault': { R: VaultUsage };
   'GET /console/audit': { Q: { area?: string; staff?: string; before?: string }; R: { entries: AuditEntry[]; more: boolean } };
   'GET /console/staff': { R: { staff: StaffRow[] } };
   'POST /console/staff': { B: { email: string; role: StaffRole }; R: { ok: true } };

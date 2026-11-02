@@ -10,6 +10,8 @@ import type {
   StaffRole,
   StaffRow,
   TournamentState,
+  VaultPlanId,
+  VaultUsage,
   WishlistTotals,
 } from '../contract';
 import type { AppEnv, Env } from '../env';
@@ -365,6 +367,54 @@ consoleApp.get('/wishlist', need('wishlist'), async (c) => {
     return notConnected();
   }
 });
+
+consoleApp.get('/vault', need('vault'), async (c) => {
+  const notConnected = () => c.json(errorBody(c, "Planary Vault isn't connected yet.", 'not_connected'), 503);
+  if (!c.env.INTERNAL_KEY_VAULT) return notConnected();
+  const base = (c.env.VAULT_API ?? '').trim().replace(/\/+$/, '');
+  const headers = { 'x-internal-key': c.env.INTERNAL_KEY_VAULT };
+  try {
+    // The service binding when there is one, else VAULT_API (for local runs).
+    const res = c.env.VAULT
+      ? await c.env.VAULT.fetch(new Request('https://vault.internal/internal/usage', { headers }))
+      : /^https?:\/\//.test(base)
+        ? await fetch(`${base}/internal/usage`, { headers, signal: AbortSignal.timeout(10_000) })
+        : null;
+    if (!res?.ok) return notConnected();
+    return c.json(vaultUsage(await res.json()));
+  } catch (error) {
+    console.log(`vault usage failed: ${error}`);
+    return notConnected();
+  }
+});
+
+/** Vault's /internal/usage, checked field by field: only what the Console shows passes. */
+export function vaultUsage(raw: unknown): VaultUsage {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  const text = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const people = (Array.isArray(d.people) ? d.people : [])
+    .filter((p): p is Record<string, unknown> => !!p && typeof p === 'object' && typeof (p as Record<string, unknown>).userId === 'string')
+    .map((p) => ({
+      userId: text(p.userId, 64),
+      name: text(p.name, 48),
+      email: text(p.email, 254),
+      plan: (p.plan === 'plus' || p.plan === 'pro' ? p.plan : 'free') as VaultPlanId,
+      used: num(p.used),
+      quota: num(p.quota),
+      files: num(p.files),
+      createdAt: num(p.createdAt),
+      lastSeen: typeof p.lastSeen === 'number' ? num(p.lastSeen) : null,
+    }))
+    .sort((a, b) => b.used - a.used);
+  return {
+    people,
+    totals: {
+      vaults: people.length,
+      used: people.reduce((sum, p) => sum + p.used, 0),
+      quota: people.reduce((sum, p) => sum + p.quota, 0),
+    },
+  };
+}
 
 /** Wishlist's /api/internal/totals in the Console's shape. Shops come as item counts and become shares. */
 export function wishlistTotals(raw: unknown): WishlistTotals {
