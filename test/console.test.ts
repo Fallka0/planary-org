@@ -432,6 +432,64 @@ describe('vault', () => {
   });
 });
 
+describe('people', () => {
+  beforeEach(addAllStaff);
+
+  const VAULT_KEY = { INTERNAL_KEY_VAULT: 'vault-key' };
+  let restrictions: unknown = null;
+  const VAULT = {
+    fetch: async (req: Request) => {
+      if (req.headers.get('x-internal-key') !== 'vault-key') return new Response('', { status: 403 });
+      const path = new URL(req.url).pathname;
+      if (path === '/internal/users/p1/restrictions') restrictions = await req.json();
+      if (!path.startsWith('/internal/users/p1')) return Response.json({ vault: null });
+      const r = (restrictions ?? {}) as { uploads?: boolean; sharing?: boolean; quota?: number | null; reason?: string };
+      return Response.json({
+        vault: { userId: 'p1', name: 'Rita Roth', email: 'rita@planary.test', plan: 'free', used: 5, quota: r.quota ?? 100, files: 1, createdAt: 1, lastSeen: null, restrictions: { uploads: r.uploads !== false, sharing: r.sharing !== false, quota: r.quota ?? null, reason: r.reason ?? null, since: restrictions ? 3 : null } },
+      });
+    },
+  } as unknown as Fetcher;
+
+  it('lists accounts for support, not for viewers, without anything secret', async () => {
+    expect((await get('/console/people', { who: VIEWER })).status).toBe(403);
+    const list = await json(get('/console/people', { who: SUPPORT }));
+    expect(list.people[0]).toMatchObject({ id: 'p1', email: 'rita@planary.test', status: 'active' });
+    expect(list.people[0].password).toBeUndefined();
+    const detail = await json(get('/console/people/p1', { who: SUPPORT, env: { ...VAULT_KEY, VAULT } }));
+    expect(detail.vault).toMatchObject({ userId: 'p1', restrictions: { uploads: true, sharing: true } });
+  });
+
+  it('suspends and lifts for managers, with a reason, in the audit log', async () => {
+    expect((await post('/console/people/p1/suspend', { until: null, reason: 'x', notify: false }, { who: SUPPORT })).status).toBe(403);
+    expect((await post('/console/people/p1/suspend', { until: null, reason: ' ', notify: false }, { who: MANAGER })).status).toBe(400);
+    expect((await post('/console/people/p1/suspend', { until: Date.now() - 1, reason: 'Spam', notify: false }, { who: MANAGER })).status).toBe(400);
+    const until = Date.now() + 7 * 86_400_000;
+    const done = await json(post('/console/people/p1/suspend', { until, reason: 'Spam links', notify: true }, { who: MANAGER }));
+    expect(done).toMatchObject({ person: { status: 'suspended', suspension: { until, reason: 'Spam links' } }, mailed: true });
+    const lifted = await json(post('/console/people/p1/unsuspend', { notify: false }, { who: MANAGER }));
+    expect(lifted).toMatchObject({ person: { status: 'active' }, mailed: false });
+    const history = (await json(get('/console/people/p1', { who: MANAGER }))).history;
+    expect(history.map((h: { action: string }) => h.action)).toEqual(['person.unsuspend', 'person.suspend']);
+    expect(history[1].details).toBe('Spam links');
+  });
+
+  it('restricts the Vault through planary-vault-api', async () => {
+    expect((await post('/console/people/p1/vault', { uploads: false, sharing: true, quota: null, reason: '', notify: false }, { who: MANAGER, env: { ...VAULT_KEY, VAULT } })).status).toBe(400);
+    const res = await json(post('/console/people/p1/vault', { uploads: false, sharing: false, quota: 1024 ** 3, reason: 'Piracy', notify: false }, { who: MANAGER, env: { ...VAULT_KEY, VAULT } }));
+    expect(res.vault).toMatchObject({ quota: 1024 ** 3, restrictions: { uploads: false, sharing: false, quota: 1024 ** 3, reason: 'Piracy' } });
+    expect(restrictions).toEqual({ uploads: false, sharing: false, quota: 1024 ** 3, reason: 'Piracy' });
+    const [entry] = (await json(get('/console/people/p1', { who: MANAGER, env: { ...VAULT_KEY, VAULT } }))).history;
+    expect(entry.sentence).toBe('Restricted the Vault: uploads off, sharing off, limit 1 GB');
+  });
+
+  it('bans only for the owner, after the email is typed', async () => {
+    expect((await post('/console/people/p1/ban', { reason: 'Fraud', email: 'rita@planary.test', notify: false }, { who: MANAGER })).status).toBe(403);
+    expect((await post('/console/people/p1/ban', { reason: 'Fraud', email: 'someone@planary.test', notify: false }, { who: OWNER })).status).toBe(400);
+    const res = await json(post('/console/people/p1/ban', { reason: 'Fraud', email: 'Rita@planary.test', notify: false }, { who: OWNER }));
+    expect(res).toMatchObject({ person: { status: 'banned' }, vaultDeleted: 'deleted' });
+  });
+});
+
 describe('errors', () => {
   it('answers unknown routes with 404 JSON and a request id', async () => {
     const res = await get('/nope');

@@ -5,6 +5,9 @@ import { defineConfig } from 'vitest/config';
 // and a local R2. AUTH stands in for planary-auth: "Bearer test|<id>|<email>|<name>" is that
 // person, anything else is signed out. STATS stands in for planary-stats. Stripe, Resend and
 // GitHub are reached with fetch, which the tests replace.
+// The account behind the fake /api/internal/people (see AUTH below).
+let person: any = { id: 'p1', name: 'Rita Roth', email: 'rita@planary.test', verified: true, createdAt: 1, lastSeen: null, signIn: ['password'], status: 'active', bannedAt: null, suspension: null, password: 'never-sent' };
+
 export default defineConfig(async () => {
   const migrations = await readD1Migrations('migrations');
   return {
@@ -36,6 +39,19 @@ export default defineConfig(async () => {
                 if (req.headers.get('x-internal-key') !== 'test-internal-key') return new Response('{}', { status: 404 });
                 const days = Number(url.searchParams.get('days'));
                 return Response.json({ accounts: 12480, accountsNew: days, signups: Array.from({ length: days }, (_, i) => (i < days / 2 ? 1 : 2)) });
+              }
+              // /api/internal/people…: one account, p1, whose state the people tests change.
+              const people = url.pathname.match(/^\/api\/internal\/people(?:\/([^/]+))?(?:\/([a-z-]+))?$/);
+              if (people) {
+                if (req.headers.get('x-internal-key') !== 'test-internal-key') return new Response('{}', { status: 404 });
+                const [, id, action] = people;
+                if (!id) return Response.json({ people: [person], more: false, counts: { all: 1, suspended: person.status === 'suspended' ? 1 : 0, banned: person.status === 'banned' ? 1 : 0 } });
+                if (id !== person.id) return Response.json({ error: 'No Planary account with that id.' }, { status: 404 });
+                if (action === 'notice') return Response.json({ mailed: true });
+                if (action === 'suspend') return req.json().then((b: any) => ((person = { ...person, status: 'suspended', suspension: { since: 1, until: b.until, reason: b.reason } }), Response.json({ person })));
+                if (action === 'unsuspend') person = { ...person, status: 'active', suspension: null };
+                if (action === 'ban') return ((person = { ...person, status: 'banned', bannedAt: 2, suspension: null }), Response.json({ person, vault: 'deleted' }));
+                return Response.json({ person });
               }
               const parts = (req.headers.get('authorization') ?? '').replace(/^Bearer /, '').split('|');
               if (parts.length < 3 || parts[0] !== 'test') return new Response(JSON.stringify({ error: 'not authenticated' }), { status: 401 });

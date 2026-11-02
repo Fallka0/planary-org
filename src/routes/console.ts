@@ -11,6 +11,7 @@ import type {
   StaffRow,
   TournamentState,
   VaultPlanId,
+  VaultRestrictions,
   VaultUsage,
   WishlistTotals,
 } from '../contract';
@@ -26,6 +27,7 @@ import { accessMap, AREAS, can, ROLES } from '../permissions';
 import { PLAN_IDS } from '../plans';
 import { serviceStatuses } from '../services';
 import { registerCustomers } from './console-customers';
+import { registerPeople } from './console-people';
 import { registerStatus } from './console-status';
 import { registerSupport } from './console-support';
 
@@ -404,6 +406,7 @@ export function vaultUsage(raw: unknown): VaultUsage {
       files: num(p.files),
       createdAt: num(p.createdAt),
       lastSeen: typeof p.lastSeen === 'number' ? num(p.lastSeen) : null,
+      restrictions: vaultRestrictions(p.restrictions),
     }))
     .sort((a, b) => b.used - a.used);
   return {
@@ -413,6 +416,18 @@ export function vaultUsage(raw: unknown): VaultUsage {
       used: people.reduce((sum, p) => sum + p.used, 0),
       quota: people.reduce((sum, p) => sum + p.quota, 0),
     },
+  };
+}
+
+/** Vault's restrictions, field by field; missing (an older Vault) means nothing restricted. */
+export function vaultRestrictions(raw: unknown): VaultRestrictions {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  return {
+    uploads: r.uploads !== false,
+    sharing: r.sharing !== false,
+    quota: typeof r.quota === 'number' ? num(r.quota) : null,
+    reason: typeof r.reason === 'string' ? r.reason.slice(0, 300) : null,
+    since: typeof r.since === 'number' ? num(r.since) : null,
   };
 }
 
@@ -571,3 +586,4 @@ consoleApp.post('/staff/:id', need('staff'), async (c) => {
 registerStatus(consoleApp);
 registerCustomers(consoleApp);
 registerSupport(consoleApp);
+registerPeople(consoleApp);

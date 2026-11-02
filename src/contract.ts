@@ -39,6 +39,8 @@ export type Area =
   | 'casino_moderation'
   | 'wishlist'
   | 'vault'
+  | 'people'
+  | 'people_ban'
   | 'audit'
   | 'staff';
 export type ServiceId = 'auth' | 'tournament' | 'casino' | 'wishlist' | 'web';
@@ -424,10 +426,54 @@ export interface VaultPerson {
   email: string;
   plan: VaultPlanId;
   used: number;
+  /** The limit that holds: staff's override (restrictions.quota) or the plan's. */
   quota: number;
   files: number;
   createdAt: number;
   lastSeen: number | null;
+  restrictions: VaultRestrictions;
+}
+
+/** What staff have turned off for one vault. All on and quota null: nothing restricted. */
+export interface VaultRestrictions {
+  uploads: boolean;
+  sharing: boolean;
+  /** Bytes, in place of the plan's limit; null keeps the plan's. */
+  quota: number | null;
+  reason: string | null;
+  since: number | null;
+}
+
+export type PersonStatus = 'active' | 'suspended' | 'banned';
+
+/** A Planary account, as planary-auth reports it. No password, no tokens. */
+export interface PersonRow {
+  id: string;
+  name: string;
+  email: string;
+  verified: boolean;
+  createdAt: number;
+  lastSeen: number | null;
+  /** password, google, github */
+  signIn: string[];
+  status: PersonStatus;
+  bannedAt: number | null;
+  suspension: { since: number; until: number | null; reason: string } | null;
+}
+
+export interface PersonDetail {
+  person: PersonRow;
+  /** null: no vault; 'not_connected': Vault couldn't be asked. */
+  vault: VaultPerson | null | 'not_connected';
+  /** Console actions on this person, newest first. */
+  history: AuditEntry[];
+}
+
+/** What a change did; `mailed` says whether the person got a mail about it. */
+export interface PersonChange {
+  person: PersonRow;
+  vault?: VaultPerson | null;
+  mailed: boolean;
 }
 
 /** Storage per person in Planary Vault, largest first. */
@@ -461,6 +507,13 @@ export interface ConsoleApi {
   'GET /console/organisers': { R: { organisers: OrganiserRow[] } };
   'GET /console/wishlist': { R: WishlistTotals };
   'GET /console/vault': { R: VaultUsage };
+  'GET /console/people': { Q: { q?: string; status?: 'suspended' | 'banned'; offset?: string }; R: { people: PersonRow[]; more: boolean; counts: { all: number; suspended: number; banned: number } } };
+  'GET /console/people/:id': { R: PersonDetail };
+  'POST /console/people/:id/suspend': { B: { until: number | null; reason: string; notify: boolean }; R: PersonChange };
+  'POST /console/people/:id/unsuspend': { B: { notify: boolean }; R: PersonChange };
+  'POST /console/people/:id/sign-out': { B: Record<string, never>; R: PersonChange };
+  'POST /console/people/:id/vault': { B: { uploads: boolean; sharing: boolean; quota: number | null; reason: string; notify: boolean }; R: PersonChange };
+  'POST /console/people/:id/ban': { B: { reason: string; email: string; notify: boolean }; R: PersonChange & { vaultDeleted: 'deleted' | 'not_configured' | 'failed' } };
   'GET /console/audit': { Q: { area?: string; staff?: string; before?: string }; R: { entries: AuditEntry[]; more: boolean } };
   'GET /console/staff': { R: { staff: StaffRow[] } };
   'POST /console/staff': { B: { email: string; role: StaffRole }; R: { ok: true } };
