@@ -16,7 +16,9 @@
     // The Console's Wishlist totals and each organisation's wishlists (/api/internal/*).
     { "binding": "WISHLIST", "service": "planary-wishlist" },
     // The Console's Vault page: storage per person (/internal/usage, with INTERNAL_KEY_VAULT).
-    { "binding": "VAULT", "service": "planary-vault-api" }
+    { "binding": "VAULT", "service": "planary-vault-api" },
+    // The Console's bwd Portal pages: roles, teacher assignments, classes (/api/internal, with INTERNAL_KEY_BWDPORTAL).
+    { "binding": "BWDPORTAL", "service": "bwd-portal" }
     // Not built yet. Add once planary-tournament-api exists (nothing here depends on it):
     // { "binding": "TOURNAMENT", "service": "planary-tournament-api" }
   ],
@@ -41,7 +43,9 @@
     // Local runs only: Wishlist's /api base when there's no WISHLIST binding. Empty in production.
     "WISHLIST_API": "",
     // Local runs only: the Vault API's base when there's no VAULT binding. Empty in production.
-    "VAULT_API": ""
+    "VAULT_API": "",
+    // Local runs only: the bwd Portal's base when there's no BWDPORTAL binding. Empty in production.
+    "BWDPORTAL_API": ""
   },
   // Secrets (wrangler secret put): INTERNAL_KEY, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
   // STRIPE_PRICE_PLUS, STRIPE_PRICE_PASS, STRIPE_PRICE_VAULT_{PLUS,PRO}_{MONTH,YEAR}, RESEND_API_KEY, GITHUB_TOKEN. See README.md.

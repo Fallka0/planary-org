@@ -39,6 +39,7 @@ export type Area =
   | 'casino_moderation'
   | 'wishlist'
   | 'vault'
+  | 'bwdportal'
   | 'people'
   | 'people_ban'
   | 'audit'
@@ -519,6 +520,15 @@ export interface ConsoleApi {
   'POST /console/staff': { B: { email: string; role: StaffRole }; R: { ok: true } };
   'POST /console/staff/:id': { B: { role: StaffRole }; R: { ok: true } };
   'POST /console/staff/:id/remove': { B: Record<string, never>; R: { ok: true } };
+  'GET /console/bwdportal/people': { Q: { q?: string; role?: BwdRole; class?: string }; R: { people: BwdPerson[] } };
+  'GET /console/bwdportal/people/:id': { R: BwdPerson };
+  'POST /console/bwdportal/people/:id': { B: BwdPersonChange; R: BwdPerson };
+  /** Replaces all of a teacher's assignments. */
+  'POST /console/bwdportal/people/:id/assignments': { B: { assignments: BwdAssignment[] }; R: BwdPerson };
+  'GET /console/bwdportal/classes': { R: { classes: BwdClass[] } };
+  'POST /console/bwdportal/classes': { B: { code: string; program: string | null }; R: BwdClass };
+  'POST /console/bwdportal/classes/:code': { B: { program?: string | null; classTeacherId?: string | null }; R: BwdClass };
+  'GET /console/bwdportal/subjects': { R: { subjects: BwdSubject[] } };
   'GET /console/search': { Q: { q: string }; R: { results: { kind: 'organisation' | 'tournament' | 'request' | 'staff'; id: string; label: string; sub: string; href: string }[] } };
 }
 
@@ -732,4 +742,40 @@ export interface InternalApi {
   'POST /internal/tournament-events': { B: TournamentEvent; R: { ok: true } };
   'POST /internal/errors': { B: { service: ServiceId; message: string; route: string; count?: number }; R: { ok: true } };
   'GET /internal/banners': { Q: { tournament: string }; R: { banners: PortalBanner[] } };
+}
+
+// ── bwd Portal (school portal of the bwd Bern) ───────────────────────────────
+
+export type BwdRole = 'student' | 'teacher';
+export interface BwdAssignment {
+  classCode: string;
+  subject: string;
+}
+export interface BwdPerson {
+  id: string;
+  name: string;
+  email: string;
+  role: BwdRole;
+  classCode: string | null;
+  /** ISO-like wall time from the portal ("2026-11-20T08:15"), or null */
+  lastLoginAt: string | null;
+  assignments: BwdAssignment[];
+  classTeacherOf: string[];
+}
+export interface BwdClass {
+  id: string;
+  code: string;
+  program: string | null;
+  classTeacher: { id: string; name: string } | null;
+  students: number;
+  teachers: number;
+}
+export interface BwdSubject {
+  code: string;
+  name: string;
+}
+/** POST /console/bwdportal/people/:id */
+export interface BwdPersonChange {
+  role?: BwdRole;
+  classCode?: string | null;
 }
