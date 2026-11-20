@@ -14,6 +14,8 @@ export interface Env {
   WISHLIST_URL?: string;
   /** planary-vault-api: /internal/usage (the Console's storage per person), with INTERNAL_KEY_VAULT. Optional. */
   VAULT?: Fetcher;
+  /** bwd Portal (bwd-portal Worker): /api/internal/* (roles, teacher assignments, classes), with INTERNAL_KEY_BWDPORTAL. Optional. */
+  BWDPORTAL?: Fetcher;
   /** planary-tournament-api, not built yet. Nothing depends on it. */
   TOURNAMENT?: Fetcher;
 
@@ -28,6 +30,8 @@ export interface Env {
   WISHLIST_API?: string;
   /** Base URL of the Vault API, for local runs without the VAULT binding. */
   VAULT_API?: string;
+  /** Base URL of the bwd Portal, for local runs without the BWDPORTAL binding (e.g. http://localhost:3000). */
+  BWDPORTAL_API?: string;
   /** JSON array overriding the health-checked services (see src/services.ts). */
   SERVICES_JSON?: string;
 
@@ -35,6 +39,8 @@ export interface Env {
   INTERNAL_KEY?: string;
   /** Vault's own key, both ways: Vault calls /internal (entitlements) with it, and the Console reads Vault's /internal/usage with it. */
   INTERNAL_KEY_VAULT?: string;
+  /** The bwd Portal's INTERNAL_KEY (same value as its secret). */
+  INTERNAL_KEY_BWDPORTAL?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   /** Stripe price of Plus (CHF 149, yearly). */

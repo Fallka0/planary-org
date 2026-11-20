@@ -39,6 +39,7 @@ export type Area =
   | 'casino_moderation'
   | 'wishlist'
   | 'vault'
+  | 'bwdportal'
   | 'people'
   | 'people_ban'
   | 'audit'
@@ -732,4 +733,40 @@ export interface InternalApi {
   'POST /internal/tournament-events': { B: TournamentEvent; R: { ok: true } };
   'POST /internal/errors': { B: { service: ServiceId; message: string; route: string; count?: number }; R: { ok: true } };
   'GET /internal/banners': { Q: { tournament: string }; R: { banners: PortalBanner[] } };
+}
+
+// ── bwd Portal (school portal of the bwd Bern) ───────────────────────────────
+
+export type BwdRole = 'student' | 'teacher';
+export interface BwdAssignment {
+  classCode: string;
+  subject: string;
+}
+export interface BwdPerson {
+  id: string;
+  name: string;
+  email: string;
+  role: BwdRole;
+  classCode: string | null;
+  /** ISO-like wall time from the portal ("2026-11-20T08:15"), or null */
+  lastLoginAt: string | null;
+  assignments: BwdAssignment[];
+  classTeacherOf: string[];
+}
+export interface BwdClass {
+  id: string;
+  code: string;
+  program: string | null;
+  classTeacher: { id: string; name: string } | null;
+  students: number;
+  teachers: number;
+}
+export interface BwdSubject {
+  code: string;
+  name: string;
+}
+/** POST /console/bwdportal/people/:id */
+export interface BwdPersonChange {
+  role?: BwdRole;
+  classCode?: string | null;
 }
