@@ -520,6 +520,15 @@ export interface ConsoleApi {
   'POST /console/staff': { B: { email: string; role: StaffRole }; R: { ok: true } };
   'POST /console/staff/:id': { B: { role: StaffRole }; R: { ok: true } };
   'POST /console/staff/:id/remove': { B: Record<string, never>; R: { ok: true } };
+  'GET /console/bwdportal/people': { Q: { q?: string; role?: BwdRole; class?: string }; R: { people: BwdPerson[] } };
+  'GET /console/bwdportal/people/:id': { R: BwdPerson };
+  'POST /console/bwdportal/people/:id': { B: BwdPersonChange; R: BwdPerson };
+  /** Replaces all of a teacher's assignments. */
+  'POST /console/bwdportal/people/:id/assignments': { B: { assignments: BwdAssignment[] }; R: BwdPerson };
+  'GET /console/bwdportal/classes': { R: { classes: BwdClass[] } };
+  'POST /console/bwdportal/classes': { B: { code: string; program: string | null }; R: BwdClass };
+  'POST /console/bwdportal/classes/:code': { B: { program?: string | null; classTeacherId?: string | null }; R: BwdClass };
+  'GET /console/bwdportal/subjects': { R: { subjects: BwdSubject[] } };
   'GET /console/search': { Q: { q: string }; R: { results: { kind: 'organisation' | 'tournament' | 'request' | 'staff'; id: string; label: string; sub: string; href: string }[] } };
 }
 
